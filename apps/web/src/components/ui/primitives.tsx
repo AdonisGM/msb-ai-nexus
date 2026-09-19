@@ -85,6 +85,9 @@ type ButtonProps = {
   className?: string
   style?: CSSProperties
   title?: string
+  /** Bắt buộc với nút chỉ có biểu tượng: không có nhãn thì trình đọc màn hình
+   *  chỉ đọc được chữ "nút". */
+  'aria-label'?: string
 }
 
 export function Button({
@@ -97,6 +100,7 @@ export function Button({
   className,
   style,
   title,
+  'aria-label': ariaLabel,
 }: ButtonProps) {
   /** Thang cỡ lấy từ mục Nút bấm của Hệ thống thiết kế: chiều cao, cỡ chữ,
    *  đệm ngang, bo góc. Bo góc chỉ dùng hai bậc 6 và 8 của thang chung. */
@@ -126,6 +130,7 @@ export function Button({
     <button
       type={type}
       title={title}
+      aria-label={ariaLabel}
       disabled={disabled}
       onClick={onClick}
       style={style}
