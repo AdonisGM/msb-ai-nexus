@@ -13,6 +13,7 @@ import { t } from '~/i18n'
 import { ATTRIBUTE_LABELS, SEGMENT_TONE } from '~/lib/customer'
 import { daysSince, vnDate } from '~/lib/dates'
 import { fmtNum } from '~/lib/format'
+import { canEditRecords } from '~/lib/can'
 
 export const Route = createFileRoute('/_app/customers/$id/')({ component: CustomerScreen })
 
@@ -25,8 +26,13 @@ export const Route = createFileRoute('/_app/customers/$id/')({ component: Custom
  *  the answer while the left is what they need in hand to give it. */
 function CustomerScreen() {
   const { id } = Route.useParams()
+  const { user } = Route.useRouteContext()
   const navigate = useNavigate()
   const query = useQuery(customerQuery(id))
+
+  /** A branch manager reads this file and never writes to it, so every control
+   *  that would post is absent rather than present and refused. */
+  const canEdit = canEditRecords(user.role)
 
   const [noting, setNoting] = useState(false)
   const [adding, setAdding] = useState(false)
@@ -60,9 +66,11 @@ function CustomerScreen() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <BackLink />
         <div className="flex flex-none items-center gap-2">
-          <Link to="/customers/$id/edit" params={{ id: customer.id }}>
-            <Button size="md">Sửa thông tin</Button>
-          </Link>
+          {canEdit ? (
+            <Link to="/customers/$id/edit" params={{ id: customer.id }}>
+              <Button size="md">Sửa thông tin</Button>
+            </Link>
+          ) : null}
           <Button size="md" onClick={() => void navigate({ to: '/customers' })}>
             Quay lại danh sách
           </Button>
@@ -71,8 +79,8 @@ function CustomerScreen() {
 
       <Identity
         customer={customer}
-        onQuickNote={() => setNoting(true)}
-        onAddOpportunity={() => setAdding(true)}
+        onQuickNote={canEdit ? () => setNoting(true) : undefined}
+        onAddOpportunity={canEdit ? () => setAdding(true) : undefined}
       />
 
       <div className="flex flex-wrap items-start gap-4">
@@ -101,13 +109,15 @@ function CustomerScreen() {
               {/** The second way in. The header button is where somebody goes
                 *  with a note already in mind; this one is where they end up
                 *  after reading the timeline and noticing a gap. */}
-              <button
-                type="button"
-                onClick={() => setNoting(true)}
-                className="cursor-pointer text-[11.5px] text-muted transition-colors hover:text-ink"
-              >
-                {t('signals.add')}
-              </button>
+              {canEdit ? (
+                <button
+                  type="button"
+                  onClick={() => setNoting(true)}
+                  className="cursor-pointer text-[11.5px] text-muted transition-colors hover:text-ink"
+                >
+                  {t('signals.add')}
+                </button>
+              ) : null}
             </div>
             <div className="mt-3">
               <SignalTimeline customerId={customer.id} />
@@ -116,8 +126,16 @@ function CustomerScreen() {
         </div>
       </div>
 
-      <SignalForm customerId={customer.id} open={noting} onClose={() => setNoting(false)} />
-      <OpportunityForm customerId={customer.id} open={adding} onClose={() => setAdding(false)} />
+      {/** Not rendered at all for a reader, rather than rendered and never
+        *  opened: a form whose save is refused has no business being in the
+        *  tree, and this way a future stray `setNoting(true)` cannot surface
+        *  one. */}
+      {canEdit ? (
+        <>
+          <SignalForm customerId={customer.id} open={noting} onClose={() => setNoting(false)} />
+          <OpportunityForm customerId={customer.id} open={adding} onClose={() => setAdding(false)} />
+        </>
+      ) : null}
     </div>
   )
 }
@@ -133,8 +151,9 @@ function Identity({
   onAddOpportunity,
 }: {
   customer: Customer
-  onQuickNote: () => void
-  onAddOpportunity: () => void
+  /** Absent for a role that only reads. */
+  onQuickNote?: () => void
+  onAddOpportunity?: () => void
 }) {
   const { leads } = customer
   const decided = leads.won + leads.lost
@@ -191,14 +210,16 @@ function Identity({
           </div>
         </div>
 
-        <div className="flex flex-none items-center gap-2">
-          <Button size="md" onClick={onQuickNote}>
-            Ghi nhận tương tác
-          </Button>
-          <Button size="md" variant="primary" onClick={onAddOpportunity}>
-            {t('opportunities.add')}
-          </Button>
-        </div>
+        {onQuickNote && onAddOpportunity ? (
+          <div className="flex flex-none items-center gap-2">
+            <Button size="md" onClick={onQuickNote}>
+              Ghi nhận tương tác
+            </Button>
+            <Button size="md" variant="primary" onClick={onAddOpportunity}>
+              {t('opportunities.add')}
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       <div className="mt-4 grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(168px,1fr))]">

@@ -15,6 +15,7 @@ import { BlockSkeleton, ErrorState } from '~/components/ui/query-state'
 import { t, tCode } from '~/i18n'
 import { daysSince, daysUntil, vnDate } from '~/lib/dates'
 import { fmtDuration, fmtMoney, fmtNum } from '~/lib/format'
+import { canEditRecords } from '~/lib/can'
 
 /** Where the reader came from, so "back" lands where they expect.
  *
@@ -38,9 +39,15 @@ export const Route = createFileRoute('/_app/opportunities/$id')({
 function OpportunityScreen() {
   const { id } = Route.useParams()
   const { from } = Route.useSearch()
+  const { user } = Route.useRouteContext()
   const navigate = useNavigate()
   const query = useQuery(opportunityQuery(id))
   const [editing, setEditing] = useState(false)
+
+  /** The funnel buttons come from the server on the lead itself, so a reader
+   *  already gets none. The edit form is the screen's own, so it is gated
+   *  here. */
+  const canEdit = canEditRecords(user.role)
 
   if (query.isError) {
     return (
@@ -126,7 +133,7 @@ function OpportunityScreen() {
             *  has already acted on, and the server refuses to edit one — so
             *  the button is absent rather than present and rejected. Correcting
             *  a closed lead means reopening it first, which leaves a trace. */}
-          {deal.outcome === 'open' ? (
+          {deal.outcome === 'open' && canEdit ? (
             <Button size="sm" onClick={() => setEditing(true)}>
               Sửa thông tin
             </Button>
@@ -156,7 +163,9 @@ function OpportunityScreen() {
         </div>
       </div>
 
-      <OpportunityForm editing={deal} open={editing} onClose={() => setEditing(false)} />
+      {canEdit ? (
+        <OpportunityForm editing={deal} open={editing} onClose={() => setEditing(false)} />
+      ) : null}
     </div>
   )
 }
@@ -172,7 +181,7 @@ function Progress({ deal }: { deal: Opportunity }) {
   const late = deal.outcome === 'open' && days !== null && days < 0
 
   const lines: Array<[string, React.ReactNode]> = [
-    ['Bước phễu', t(`stage.${deal.stage}`)],
+    ['Bước xử lý', t(`stage.${deal.stage}`)],
     ['Tiếp cận lần đầu', deal.contactedAt ? vnDate(deal.contactedAt) : muted('chưa')],
     ['Đã tư vấn', deal.advisedAt ? vnDate(deal.advisedAt) : muted('chưa')],
     [
