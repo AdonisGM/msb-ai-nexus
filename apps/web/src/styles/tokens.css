@@ -97,6 +97,15 @@
   --tip-bg: #111315;
   --tip-fg: #f1f2f3;
 
+  /* Dải màu riêng của trợ lý.
+     Một màu nữa trong bảng sẽ bị đọc là một trạng thái nghiệp vụ — xanh là
+     đạt, đỏ là hỏng. Trợ lý không phải trạng thái, nên nó lấy thứ duy nhất
+     chưa dùng tới: một dải chuyển màu. Giống nhau ở cả hai nền, vì nó luôn
+     nằm trên chính nó chứ không nằm trên mặt nền. */
+  --ai-grad: linear-gradient(115deg, oklch(.55 .22 22), oklch(.63 .21 34), oklch(.75 .17 62));
+  --ai-glow: 0 10px 34px oklch(.63 .21 34 / .24), 0 2px 12px oklch(.75 .17 62 / .20);
+
+
 
   /* Thang "thu nhập" của lịch nhiệt. Ở đây không dùng --accent được: đen đối
      xám thì hai thang thu và chi nhìn như một. */

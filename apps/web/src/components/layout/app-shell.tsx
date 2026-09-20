@@ -1,13 +1,25 @@
-import { useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
 import { Link, useRouter, useRouterState } from '@tanstack/react-router'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { LogOut, Menu, Moon, Sun, X } from 'lucide-react'
 import { logout, type Me } from '~/api/auth'
-import { Button } from '~/components/ui/primitives'
+import { Button, cx } from '~/components/ui/primitives'
 import { APP_VERSION } from '~/lib/version'
 import { t } from '~/i18n'
 import { initials } from '~/lib/format'
 import { BrandLockup } from './msb-logo'
+import { Spark } from '~/components/chat/spark'
+import { TiaBubble } from '~/components/chat/tia-bubble'
+
+/** Loaded the first time somebody opens it, not on every page view.
+ *
+ *  The panel pulls in a Markdown renderer and the chart components, and most
+ *  visits to most screens never open it — bundling that into the shell made
+ *  every page wait for code it was not going to run. */
+const Assistant = lazy(() =>
+  import('~/components/chat/assistant').then((m) => ({ default: m.Assistant })),
+)
+import { chatStatusQuery } from '~/api/chat'
 import { navFor } from './nav-config'
 import { useTheme } from './theme'
 
@@ -125,6 +137,8 @@ function TopBar({
       <SectionTitle user={user} />
 
       <div className="ml-auto flex flex-none items-center gap-1 px-3">
+        <AskTia />
+        <span className="mx-1 hidden h-5 w-px bg-line sm:block" />
         <ThemeToggle />
         <span className="mx-1 hidden h-5 w-px bg-line sm:block" />
         <Identity user={user} />
@@ -275,5 +289,80 @@ function SignOut() {
     >
       <LogOut size={15} />
     </Button>
+  )
+}
+
+/** The way in to the assistant.
+ *
+ *  Absent when no key is configured rather than present and answering 503: a
+ *  demo machine without one should look like a product that does not have the
+ *  feature, not like a product that is broken.
+ *
+ *  It owns the popup's open state rather than the shell, so every screen gets
+ *  the assistant without threading a prop through the tree. */
+function AskTia() {
+  const [open, setOpen] = useState(false)
+  const [prefill, setPrefill] = useState('')
+  const status = useQuery(chatStatusQuery())
+
+  /** Cmd/Ctrl + K, because that is where people reach for it. */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === 'k' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault()
+        setOpen((was) => !was)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  if (!status.data?.enabled) return null
+
+  const ask = (text?: string) => {
+    setPrefill(text ?? '')
+    setOpen(true)
+  }
+
+  return (
+    <div className="relative flex-none">
+      <button
+        type="button"
+        onClick={() => setOpen((was) => !was)}
+        title="Hỏi Tia  (⌘K)"
+        className={cx(
+          'flex h-[30px] cursor-pointer items-center gap-2 rounded-[9px] border border-line2 px-2.5 transition-colors',
+          open ? 'bg-sunken' : 'bg-surface hover:bg-sunken',
+        )}
+        style={open ? { boxShadow: 'var(--ai-glow)' } : undefined}
+      >
+        <span className="relative flex-none">
+          <Spark size={18} />
+        </span>
+        <span className="hidden text-[12.5px] font-semibold whitespace-nowrap text-ink sm:block">
+          Hỏi Tia
+        </span>
+      </button>
+
+      {/** Anchored to the button rather than to the window, so the tail points
+        *  at the thing it is speaking from however the header reflows. */}
+      <TiaBubble suppressed={open} onAsk={ask} />
+
+      {/** Nothing shown while it arrives: the popup is opened by a deliberate
+        *  click, and a spinner where a panel is about to be reads as slower
+        *  than the panel simply appearing. */}
+      {open ? (
+        <Suspense fallback={null}>
+          <Assistant
+            open
+            onClose={() => {
+              setOpen(false)
+              setPrefill('')
+            }}
+            prefill={prefill}
+          />
+        </Suspense>
+      ) : null}
+    </div>
   )
 }
