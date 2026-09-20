@@ -20,34 +20,21 @@
 # trong container phục vụ, API là REST thuần. Không chỗ nào dùng WebSocket.
 
 # ── IP thật của khách ───────────────────────────────────────────────────────
-# Lặp lại dải Cloudflare dù cấu hình home đã khai, vì hai tệp cùng nằm trong
-# khối http và directive này cộng dồn chứ không đè nhau — lặp thì vô hại, còn
-# dựa vào tệp kia thì ngày nào đó gỡ home ra là nexus mất IP thật mà không báo.
+# Không khai gì ở đây, và đó là chủ ý.
 #
-# Danh sách gốc ở cloudflare.com/ips-v4 và /ips-v6.
-set_real_ip_from 173.245.48.0/20;
-set_real_ip_from 103.21.244.0/22;
-set_real_ip_from 103.22.200.0/22;
-set_real_ip_from 103.31.4.0/22;
-set_real_ip_from 141.101.64.0/18;
-set_real_ip_from 108.162.192.0/18;
-set_real_ip_from 190.93.240.0/20;
-set_real_ip_from 188.114.96.0/20;
-set_real_ip_from 197.234.240.0/22;
-set_real_ip_from 198.41.128.0/17;
-set_real_ip_from 162.158.0.0/15;
-set_real_ip_from 104.16.0.0/13;
-set_real_ip_from 104.24.0.0/14;
-set_real_ip_from 172.64.0.0/13;
-set_real_ip_from 131.0.72.0/22;
-set_real_ip_from 2400:cb00::/32;
-set_real_ip_from 2606:4700::/32;
-set_real_ip_from 2803:f800::/32;
-set_real_ip_from 2405:b500::/32;
-set_real_ip_from 2405:8100::/32;
-set_real_ip_from 2a06:98c0::/29;
-set_real_ip_from 2c0f:f248::/32;
-real_ip_header CF-Connecting-IP;
+# `set_real_ip_from` và `real_ip_header` trong cấu hình home nằm ở khối http,
+# nên chúng áp dụng cho mọi server block của cả máy, kể cả hai cái dưới đây.
+# Khai lại ở tệp này thì `set_real_ip_from` vô hại vì nó cộng dồn, nhưng
+# `real_ip_header` là directive MỘT giá trị — khai hai lần cùng context là
+# nginx từ chối khởi động:
+#
+#   nginx: [emerg] "real_ip_header" directive is duplicate
+#
+# Và nginx chết thì kéo theo cả home, không chỉ nexus.
+#
+# Hệ quả phải nhớ: nếu tệp home bị gỡ đi thì nexus lặng lẽ mất IP thật, mọi
+# phiên đăng nhập ghi địa chỉ của Cloudflare. Lúc đó chuyển hai khối ấy sang
+# khối http trong /etc/nginx/nginx.conf, chứ đừng chép vào cả hai tệp.
 
 # ── Upstream ────────────────────────────────────────────────────────────────
 upstream nexus_web { zone nexus_web 64k; server 127.0.0.1:4510; keepalive 2; }
@@ -84,7 +71,7 @@ server {
 
     location / {
         # X-Forwarded-For đặt bằng $remote_addr chứ không phải
-        # $proxy_add_x_forwarded_for: nhờ real_ip_header ở trên, $remote_addr
+        # $proxy_add_x_forwarded_for: nhờ real_ip_header ở khối http, $remote_addr
         # đã là IP thật của khách. Dùng $proxy_add_ thì nó nối thêm cả chuỗi
         # khách tự gửi lên, mà .env để TRUST_PROXY=1 nghĩa là API chỉ bỏ qua
         # đúng một hop — khách sẽ tự khai được địa chỉ của mình.
