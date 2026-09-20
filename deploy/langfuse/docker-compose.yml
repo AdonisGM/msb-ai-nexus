@@ -31,6 +31,9 @@
 name: langfuse
 
 x-lf-env: &lf-env
+  # Mật khẩu nằm giữa một URL, nên nó phải an toàn trong URL. Sinh bằng
+  # `openssl rand -hex 24`; base64 có `/` và `+`, và một dấu `/` ở đây làm
+  # Prisma đọc phần sau thành host rồi chết với "invalid port number".
   DATABASE_URL: postgresql://langfuse:${POSTGRES_PASSWORD:?thiếu POSTGRES_PASSWORD}@postgres:5432/langfuse
   SALT: ${SALT:?thiếu SALT}
   ENCRYPTION_KEY: ${ENCRYPTION_KEY:?thiếu ENCRYPTION_KEY}
