@@ -42,7 +42,7 @@ export function OpportunityList({ customerId }: { customerId: string }) {
       {rows.length === 0 ? (
         <div className="flex flex-col items-center gap-1 rounded-lg border border-dashed border-line2 px-4 py-10 text-center">
           <span className="text-[13px]">Chưa có cơ hội nào</span>
-          <span className="text-[12px] text-muted">Tạo cơ hội để bắt đầu phễu.</span>
+          <span className="text-[12px] text-muted">Tạo cơ hội để bắt đầu theo dõi.</span>
         </div>
       ) : (
         rows.map((deal) => <Block key={deal.id} deal={deal} />)

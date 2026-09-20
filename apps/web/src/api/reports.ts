@@ -18,6 +18,12 @@ export type FunnelStep = {
   dropped: number
 }
 
+/** Where a lead stands, as one of five places it can be — not a funnel step.
+ *  `new`, `contacted` and `advised` mean *still open at* that stage. */
+export type LeadState = 'new' | 'contacted' | 'advised' | 'won' | 'lost'
+
+export type Standing = { state: LeadState; value: number; shareBps: number }
+
 export type Funnel = {
   leads: number
   contacted: number
@@ -31,6 +37,9 @@ export type Funnel = {
   steps: FunnelStep[]
   /** Measured, not assumed. Null on a branch with no leads at all. */
   weakestStep: FunnelStep['step'] | null
+  /** The same leads split into parts that add up to `leads`, unlike the
+   *  cumulative counts above. This is the one that can be drawn as shares. */
+  standing: Standing[]
 }
 
 /** The counts every row of both dashboards is read through. */
@@ -75,7 +84,24 @@ export type BreakdownRow = {
   winBps: number
 }
 
-export type MonthRow = { month: string; won: number; value: number }
+export type MonthRow = {
+  /** `YYYY-MM`. */
+  month: string
+  /** Leads raised in this month — what the month was handed, and what its
+   *  target is set against. */
+  leads: number
+  /** Decided in this month, whenever the lead itself was raised. */
+  won: number
+  lost: number
+  /** Value of the wins, in đồng. */
+  value: number
+  targetBps: number
+  /** The month's own intake at the branch's rate, in whole deals. */
+  targetWon: number
+  /** Wins against that target. Passes 10 000 when a month closed more than
+   *  its own intake asked for, which is a real thing and not an error. */
+  doneBps: number
+}
 
 export type ReportRange = { from?: string; to?: string; segment?: string; ownerId?: string }
 

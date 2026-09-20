@@ -190,28 +190,6 @@ export function CardTitle({
   )
 }
 
-/* ---------- Thanh tiến độ ---------- */
-
-export function ProgressBar({
-  width,
-  color,
-  height = 6,
-}: {
-  width: string
-  color: string
-  height?: number
-}) {
-  return (
-    <div
-      className="overflow-hidden rounded-full bg-sunken"
-      style={{ height }}
-      role="presentation"
-    >
-      <div className="h-full rounded-full" style={{ width, background: color }} />
-    </div>
-  )
-}
-
 /* ---------- Trạng thái rỗng ---------- */
 
 export function EmptyState({ children }: { children: ReactNode }) {

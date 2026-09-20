@@ -8,16 +8,17 @@ import {
   funnelQuery,
   monthlyQuery,
   pct,
-  type BreakdownRow,
   type Counts,
   type Funnel,
-  type MonthRow,
   type OwnerRow,
   type TeamRow,
 } from '~/api/reports'
 import { opportunitiesQuery, type Opportunity, type OpportunityPage } from '~/api/opportunities'
 import { Card, Chip, cx } from '~/components/ui/primitives'
 import { BlockSkeleton, ErrorState } from '~/components/ui/query-state'
+import { BreakdownChart, WinRateChart } from '~/components/reports/breakdown-chart'
+import { LeadStanding } from '~/components/reports/lead-standing'
+import { Trend } from '~/components/reports/trend-chart'
 import { SegmentedControl } from '~/components/ui/segmented'
 import { t, tCode } from '~/i18n'
 import { daysSince, dmDate } from '~/lib/dates'
@@ -183,7 +184,7 @@ function LeadDashboard({
                     <span className="text-[11.5px]">
                       {pct(row.crBps, 1)} so {pct(row.targetBps)}
                     </span>
-                    <Bar value={row.crBps} of={row.targetBps} />
+                    <RateBar value={row.crBps} of={row.targetBps} />
                   </span>
                   <span className="num text-right">{row.open}</span>
                   <span
@@ -250,17 +251,13 @@ function LeadDashboard({
         </div>
 
         <div className="flex min-w-0 flex-[1_1_300px] flex-col gap-4">
-          <BreakdownCard
+          <WinRateChart
             title="Tỷ lệ chốt theo sản phẩm"
             note="trên số đã ngã ngũ"
-            query={products}
-            render={(row) => ({
-              label: t(`product.${row.key as 'card'}`),
-              lead: row.won + row.lost > 0 ? pct(row.winBps) : '—',
-              side: `${row.won} trên ${row.won + row.lost}`,
-              bps: row.winBps,
-              of: BPS_FULL,
-            })}
+            rows={products.data ?? []}
+            loading={products.isPending}
+            label={(key) => t(`product.${key as 'card'}`)}
+            targetBps={funnel.data.targetBps}
           />
         </div>
       </div>
@@ -314,7 +311,9 @@ function BranchDashboard({ range }: { range: { from: string; to: string } }) {
             value: f.gap,
             sub: 'cơ hội',
             tone: f.gap > 0 ? 'var(--warn)' : 'var(--success)',
-            note: f.gap === 0 ? 'Đã vượt ngưỡng' : `cần thêm ${f.gap} deal nữa`,
+            /** What the threshold actually asks for, rather than repeating the
+             *  number already printed above it in different words. */
+            note: `ngưỡng kỳ này là ${f.won + f.gap} deal, đã có ${f.won}`,
           },
           {
             label: 'Rơi nhiều nhất ở bước',
@@ -324,117 +323,55 @@ function BranchDashboard({ range }: { range: { from: string; to: string } }) {
         ]}
       />
 
-      <Card>
-        <CardHead
-          title="Phễu khai thác"
-          note={`${fmtNum(f.leads)} lead vào, ${f.won} deal ra, chuyển đổi ${pct(f.crBps, 1)}`}
-          bare
-        />
-        <div className="mt-3 grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(130px,1fr))]">
-          {[
-            {
-              label: 'Lead được giao',
-              value: f.leads,
-              color: 'var(--c-neutral)',
-              note: 'gốc của phễu',
-            },
-            {
-              label: 'Đã tiếp cận',
-              value: f.contacted,
-              color: 'var(--c-info)',
-              note: kept(f.steps[0]),
-            },
-            {
-              label: 'Đã tư vấn',
-              value: f.advised,
-              color: 'var(--c-pending)',
-              note: kept(f.steps[1]),
-            },
-            {
-              /** Counted against every lead, not against "đã tư vấn": a lead
-               *  can be won off a first call without ever being advised, so
-               *  wins over advised can pass 100% and would read as nonsense
-               *  in a column of retention rates. */
-              label: 'Chốt thành công',
-              value: f.won,
-              color: 'var(--c-success)',
-              note: `${pct(f.crBps, 1)} trên tổng lead`,
-            },
-          ].map((column) => (
-            <div key={column.label} className="flex flex-col gap-1.5">
-              <span className="flex items-center gap-1.5 text-[11px] text-muted">
-                <span
-                  className="size-2 flex-none rounded-full"
-                  style={{ background: column.color }}
-                />
-                {column.label}
-              </span>
-              <span className="num text-[24px] leading-none font-semibold">
-                {fmtNum(column.value)}
-              </span>
-              <span className="h-2 w-full overflow-hidden rounded-full bg-sunken">
-                <span
-                  className="block h-full rounded-full"
-                  style={{
-                    width: `${f.leads > 0 ? Math.max(2, (column.value / f.leads) * 100) : 0}%`,
-                    background: column.color,
-                  }}
-                />
-              </span>
-              <span className="text-[11px] text-muted">{column.note}</span>
-            </div>
-          ))}
+      {/** The ring and the trend share a row at a third and two thirds: both
+        *  are read at a glance, and stacked full-width they pushed the
+        *  breakdowns below the fold on every laptop. They stack anyway under
+        *  about 900px, where two thirds of the width is no longer enough for
+        *  twelve months of bars. */}
+      <div className="flex flex-wrap items-stretch gap-4">
+        <div className="flex min-w-0 flex-[1_1_280px]">
+          <LeadStanding funnel={f} />
         </div>
-      </Card>
-
-      <Trend months={months.data ?? []} loading={months.isPending} />
+        <div className="flex min-w-0 flex-[2_1_560px]">
+          <Trend months={months.data ?? []} loading={months.isPending} />
+        </div>
+      </div>
 
       <div className="flex flex-wrap items-start gap-4">
-        <div className="flex min-w-0 flex-[1_1_300px]">
-          <BreakdownCard
+        <div className="flex min-w-0 flex-[1_1_320px]">
+          <BreakdownChart
             title="Cơ cấu theo sản phẩm"
             note="số cơ hội"
-            query={products}
-            render={(row) => ({
-              label: t(`product.${row.key as 'card'}`),
-              lead: String(row.total),
-              side: pct(row.shareBps),
-              bps: row.shareBps,
-              of: maxShare(products.data),
-            })}
+            rows={products.data ?? []}
+            loading={products.isPending}
+            label={(key) => t(`product.${key as 'card'}`)}
           />
         </div>
 
-        <div className="flex min-w-0 flex-[1_1_300px]">
-          <BreakdownCard
+        <div className="flex min-w-0 flex-[1_1_320px]">
+          <BreakdownChart
             title="Cơ cấu theo phân khúc"
             note="số cơ hội"
-            query={segments}
-            render={(row) => ({
-              label: t(`segment.${row.key as 'sse'}`),
-              lead: String(row.total),
-              side: pct(row.shareBps),
-              bps: row.shareBps,
-              of: maxShare(segments.data),
-              color: row.key === 'sse' ? 'var(--c-info)' : 'var(--c-pending)',
-            })}
+            rows={segments.data ?? []}
+            loading={segments.isPending}
+            /** The short form: the axis gutter of a card this wide does not
+             *  hold "Khách hàng doanh nghiệp SSE". */
+            label={(key) => t(`segment.${key as 'sse'}.short`)}
           />
         </div>
 
-        <div className="flex min-w-0 flex-[1_1_300px]">
-          <BreakdownCard
+        <div className="flex min-w-0 flex-[1_1_320px]">
+          <BreakdownChart
             title="Lý do thất bại"
             note={`${f.lost} cơ hội thất bại`}
-            query={blockers}
+            rows={blockers.data ?? []}
+            loading={blockers.isPending}
             empty="Chưa có cơ hội nào ghi điểm vướng"
-            render={(row) => ({
-              label: tCode('blocker', row.key, row.key),
-              lead: String(row.total),
-              side: pct(row.shareBps),
-              bps: row.shareBps,
-              of: maxShare(blockers.data),
-              color: 'var(--c-danger)',
-            })}
+            label={(key) => tCode('blocker', key, key)}
+            /** Every one of these rows is already a loss, so splitting it by
+             *  outcome would draw two empty segments on each bar. */
+            split={false}
+            color="var(--c-danger)"
           />
         </div>
       </div>
@@ -442,11 +379,6 @@ function BranchDashboard({ range }: { range: { from: string; to: string } }) {
       <Teams rows={teams.data ?? []} loading={teams.isPending} />
     </div>
   )
-}
-
-function kept(step: Funnel['steps'][number] | undefined): string {
-  if (!step) return ''
-  return `giữ ${pct(step.keptBps)} bước trước, rơi ${step.dropped}`
 }
 
 const STEP_LABEL: Record<Funnel['steps'][number]['step'], string> = {
@@ -569,55 +501,7 @@ function Metric({
   )
 }
 
-/* ─────────────────────────────── The trend ──────────────────────────────── */
-
-/** Wins per month, as bars.
- *
- *  No target line beside them: targets are set per quarter, and splitting one
- *  into three equal months would draw a line the branch never agreed to.
- *
- *  Only the months that have something in them, which the server already
- *  enforces. A chart padded to twelve bars with eleven empty says the branch
- *  collapsed rather than that the system is new. */
-function Trend({ months, loading }: { months: MonthRow[]; loading: boolean }) {
-  const max = Math.max(1, ...months.map((row) => row.won))
-
-  return (
-    <Card>
-      <CardHead title="Cơ hội chốt theo tháng" note="theo ngày chốt" bare />
-
-      {loading ? (
-        <div className="mt-3">
-          <BlockSkeleton rows={3} />
-        </div>
-      ) : months.length === 0 ? (
-        <p className="mt-3 text-[12px] text-muted">Chưa có cơ hội nào được chốt.</p>
-      ) : (
-        <div className="mt-4 flex h-[180px] items-end gap-2.5">
-          {months.map((row) => (
-            <div key={row.month} className="flex flex-1 flex-col items-center gap-1.5">
-              <span className="num text-[11.5px] font-semibold">{row.won}</span>
-              <span
-                className="w-[34%] min-w-[18px] rounded-t-[5px] bg-accent"
-                style={{ height: `${(row.won / max) * 130}px` }}
-              />
-              <span className="text-[10.5px] text-muted">{monthLabel(row.month)}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </Card>
-  )
-}
-
-function monthLabel(month: string): string {
-  const [, mm] = month.split('-')
-  return `Th ${Number(mm)}`
-}
-
 /* ───────────────────────────────── Shared ───────────────────────────────── */
-
-const BPS_FULL = 10_000
 
 type Tile = {
   label: string
@@ -671,7 +555,9 @@ function paceColor(ratio: number): string {
   return 'var(--c-danger)'
 }
 
-function Bar({ value, of }: { value: number; of: number }) {
+/** A rate against its target, as a bar. Named for what it shows rather than
+ *  for its shape: `Bar` is Recharts' now. */
+function RateBar({ value, of }: { value: number; of: number }) {
   const ratio = of > 0 ? value / of : 0
   return (
     <span className="h-1.5 w-full overflow-hidden rounded-full bg-sunken">
@@ -681,68 +567,6 @@ function Bar({ value, of }: { value: number; of: number }) {
       />
     </span>
   )
-}
-
-function BreakdownCard({
-  title,
-  note,
-  query,
-  empty,
-  render,
-}: {
-  title: string
-  note?: string
-  query: { data?: BreakdownRow[]; isPending: boolean }
-  empty?: string
-  render: (row: BreakdownRow) => {
-    label: string
-    lead: string
-    side: string
-    bps: number
-    of: number
-    color?: string
-  }
-}) {
-  return (
-    <Card className="w-full">
-      <CardHead title={title} note={note} bare />
-      {query.isPending ? (
-        <div className="mt-3">
-          <BlockSkeleton rows={4} />
-        </div>
-      ) : (query.data ?? []).length === 0 ? (
-        <p className="mt-3 text-[12px] text-muted">{empty ?? 'Chưa có dữ liệu trong kỳ.'}</p>
-      ) : (
-        <div className="mt-3 flex flex-col gap-2.5">
-          {(query.data ?? []).map((row) => {
-            const line = render(row)
-            return (
-              <div key={row.key} className="flex flex-col gap-1">
-                <span className="flex items-baseline gap-2 text-[12px]">
-                  <span className="min-w-0 flex-1 truncate">{line.label}</span>
-                  <span className="num font-semibold">{line.lead}</span>
-                  <span className="num w-10 text-right text-[11px] text-muted">{line.side}</span>
-                </span>
-                <span className="h-1.5 w-full overflow-hidden rounded-full bg-sunken">
-                  <span
-                    className="block h-full rounded-full"
-                    style={{
-                      width: `${line.of > 0 ? Math.max(2, (line.bps / line.of) * 100) : 0}%`,
-                      background: line.color ?? 'var(--accent)',
-                    }}
-                  />
-                </span>
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </Card>
-  )
-}
-
-function maxShare(rows?: BreakdownRow[]): number {
-  return Math.max(1, ...(rows ?? []).map((row) => row.shareBps))
 }
 
 /** A short list of leads with one figure on the right. Used for both of the

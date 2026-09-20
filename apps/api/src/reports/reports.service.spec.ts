@@ -116,6 +116,52 @@ describe('the funnel', () => {
   })
 })
 
+describe('where the leads stand', () => {
+  /** The funnel counts nest — every won lead was also contacted — so they can
+   *  never be drawn as shares of a whole. These five can. */
+  it('splits every lead into exactly one place', async () => {
+    const s = await scene()
+    const report = await service.funnel(s.bm, {})
+
+    const total = report.standing.reduce((sum, part) => sum + part.value, 0)
+    expect(total).toBe(report.leads)
+  })
+
+  it('counts each state from the scene', async () => {
+    const s = await scene()
+    const { standing } = await service.funnel(s.bm, {})
+    const at = (state: string) => standing.find((part) => part.state === state)?.value
+
+    /** Four untouched, two contacted and open, two advised and open, one won,
+     *  one lost. */
+    expect(at('new')).toBe(4)
+    expect(at('contacted')).toBe(2)
+    expect(at('advised')).toBe(2)
+    expect(at('won')).toBe(1)
+    expect(at('lost')).toBe(1)
+  })
+
+  /** A closed lead belongs to its outcome and nowhere else, however far down
+   *  the funnel it got before it closed. */
+  it('keeps a closed lead out of the open states', async () => {
+    const s = await scene()
+    const { standing } = await service.funnel(s.bm, {})
+    const open = standing
+      .filter((part) => part.state !== 'won' && part.state !== 'lost')
+      .reduce((sum, part) => sum + part.value, 0)
+
+    expect(open).toBe(8)
+  })
+
+  it('reads each share against the total', async () => {
+    const s = await scene()
+    const { standing } = await service.funnel(s.bm, {})
+
+    /** Four of ten. */
+    expect(standing.find((part) => part.state === 'new')?.shareBps).toBe(4000)
+  })
+})
+
 describe('by salesperson', () => {
   it('gives one row per person with the three queues a team lead chases', async () => {
     const s = await scene()
@@ -220,6 +266,14 @@ describe('the monthly trend', () => {
     expect(rows[0].won).toBe(1)
   })
 
+  it('counts the losses beside the wins', async () => {
+    const s = await scene()
+    const rows = await service.monthly(s.bm, {})
+
+    expect(rows[0].won).toBe(1)
+    expect(rows[0].lost).toBe(1)
+  })
+
   /** Dated by when it closed: a deal landed in September belongs to
    *  September however long it took to get there. */
   it('dates a win by when it closed, not when it was raised', async () => {
@@ -235,6 +289,60 @@ describe('the monthly trend', () => {
       .where(eq(opportunities.id, won.id))
 
     const rows = await service.monthly(s.bm, {})
-    expect(rows[0].month).toBe('2026-07')
+    const july = rows.find((row) => row.month === '2026-07')
+
+    expect(july?.won).toBe(1)
+    /** And the lead itself is counted in January, where it was raised: the
+     *  month that was handed the work is not always the month that finished
+     *  it, and the row says both. */
+    expect(rows.find((row) => row.month === '2026-01')?.leads).toBe(1)
+  })
+
+  /** The month's own intake at the branch's rate — not a quarterly target cut
+   *  into three, which would draw a line nobody agreed to. */
+  it('sets each month a target from the leads that month was handed', async () => {
+    const s = await scene()
+    await makeTarget({ unitId: s.unit.id, metric: 'cr_rate', amount: 2000 })
+
+    const [row] = await service.monthly(s.bm, {})
+
+    expect(row.leads).toBe(10)
+    /** Ten leads at 20% is two deals; one landed, so the month did half of
+     *  what it was asked. */
+    expect(row.targetWon).toBe(2)
+    expect(row.doneBps).toBe(5000)
+  })
+
+  it('lets a month that closed more than it was handed pass a hundred percent', async () => {
+    const s = await scene()
+    await makeTarget({ unitId: s.unit.id, metric: 'cr_rate', amount: 600 })
+
+    const [row] = await service.monthly(s.bm, {})
+
+    /** Ten leads at 6% rounds to one deal, and one landed. */
+    expect(row.targetWon).toBe(1)
+    expect(row.doneBps).toBe(10_000)
+  })
+
+  /** Nothing was asked of a month that took no leads, so nothing is
+   *  outstanding — and the line must not divide by zero on the way to saying
+   *  so. */
+  it('reads zero rather than infinity in a month with no intake', async () => {
+    const s = await scene()
+    const [won] = await testDb
+      .select()
+      .from(opportunities)
+      .where(eq(opportunities.outcome, 'won'))
+
+    await testDb
+      .update(opportunities)
+      .set({ closedAt: new Date('2026-07-11') })
+      .where(eq(opportunities.id, won.id))
+
+    const july = (await service.monthly(s.bm, {})).find((row) => row.month === '2026-07')
+
+    expect(july?.leads).toBe(0)
+    expect(july?.targetWon).toBe(0)
+    expect(july?.doneBps).toBe(0)
   })
 })

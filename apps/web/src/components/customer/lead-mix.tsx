@@ -1,3 +1,4 @@
+import { Cell, Pie, PieChart } from 'recharts'
 import type { LeadSummary } from '~/api/customers'
 import { cx } from '~/components/ui/primitives'
 
@@ -57,10 +58,13 @@ export function LeadBar({ leads, className }: { leads: LeadSummary; className?: 
 
 /** The same four figures as a ring, for the card above the table.
  *
- *  Drawn with one `conic-gradient` rather than four SVG arcs: the maths is the
- *  running total either way, and a gradient cannot leave the hairline gaps
- *  between adjacent arcs that make a full ring look like it is missing a
- *  slice. */
+ *  The four parts are disjoint and the server guarantees they add to the
+ *  total, which is what lets this be a ring at all.
+ *
+ *  Nothing to show is drawn as an empty ring, not as an absent one, so the
+ *  card keeps its shape while a filter is being narrowed down to nothing —
+ *  Recharts draws no sectors for a dataset of zeroes, so the empty track is a
+ *  plain circle underneath. */
 export function LeadDonut({
   leads,
   size = 132,
@@ -70,33 +74,47 @@ export function LeadDonut({
   size?: number
   children?: React.ReactNode
 }) {
-  const stops: string[] = []
-  let at = 0
-
-  for (const bucket of BUCKETS) {
-    const share = leads.total > 0 ? (leads[bucket.id] / leads.total) * 100 : 0
-    if (share > 0) {
-      stops.push(`${bucket.color} ${at}% ${at + share}%`)
-      at += share
-    }
-  }
-
-  /** Nothing to show is drawn as an empty ring, not as an absent one, so the
-   *  card keeps its shape while a filter is being narrowed down to nothing. */
-  const ring =
-    stops.length > 0
-      ? `conic-gradient(from -90deg, ${stops.join(', ')})`
-      : 'conic-gradient(var(--sunken) 0% 100%)'
+  const parts = BUCKETS.map((bucket) => ({ ...bucket, value: leads[bucket.id] })).filter(
+    (part) => part.value > 0,
+  )
 
   return (
-    <span
-      className="relative grid flex-none place-items-center rounded-full"
-      style={{ width: size, height: size, background: ring }}
-    >
+    <span className="relative grid flex-none place-items-center" style={{ width: size, height: size }}>
       <span
-        className="grid place-items-center rounded-full bg-surface text-center"
-        style={{ width: size - 34, height: size - 34 }}
-      >
+        className="absolute rounded-full"
+        style={{
+          width: size,
+          height: size,
+          /** The track, as a ring rather than a disc: a filled circle would
+           *  show through the gaps Recharts leaves between sectors. */
+          background: 'var(--sunken)',
+          maskImage: `radial-gradient(circle, transparent ${size / 2 - 17}px, black ${size / 2 - 17}px)`,
+          WebkitMaskImage: `radial-gradient(circle, transparent ${size / 2 - 17}px, black ${size / 2 - 17}px)`,
+        }}
+      />
+
+      <PieChart width={size} height={size} className="absolute">
+        <Pie
+          data={parts}
+          dataKey="value"
+          nameKey="label"
+          cx="50%"
+          cy="50%"
+          innerRadius={size / 2 - 17}
+          outerRadius={size / 2}
+          startAngle={90}
+          endAngle={-270}
+          stroke="none"
+          isAnimationActive={false}
+        >
+          {parts.map((part) => (
+            <Cell key={part.id} fill={part.color} />
+          ))}
+        </Pie>
+      </PieChart>
+
+      {/** Over the hole. Pointer events off so it never eats a hover. */}
+      <span className="pointer-events-none relative grid place-items-center text-center">
         {children}
       </span>
     </span>

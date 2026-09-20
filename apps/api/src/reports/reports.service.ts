@@ -1,11 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common'
 import { and, count, eq, gte, isNotNull, isNull, lt, sql, type SQL } from 'drizzle-orm'
-import { alias } from 'drizzle-orm/pg-core'
+import { alias, type PgColumn } from 'drizzle-orm/pg-core'
 import { opportunityScope } from '../auth/scope'
 import { DB, type Db } from '../db/db.module'
 import { dealsToTarget, rateBps } from '../lib/money'
 import {
-
+  BPS_PER_UNIT,
   customers,
   opportunities,
   targets,
@@ -13,6 +13,9 @@ import {
   type User,
 } from '../db/schema'
 import type { ReportQuery } from './dto'
+
+/** One calendar month of the trend, before the target arithmetic is added. */
+type MonthRow = { month: string; leads: number; won: number; lost: number; value: number }
 
 /** The branch's own arithmetic, in one place.
  *
@@ -44,6 +47,27 @@ export class ReportsService {
         advised: sql<number>`count(*) filter (where ${opportunities.advisedAt} is not null)`,
         won: sql<number>`count(*) filter (where ${opportunities.outcome} = 'won')`,
         lost: sql<number>`count(*) filter (where ${opportunities.outcome} = 'lost')`,
+
+        /** The same leads again, split so the parts add up to the whole
+         *  instead of nesting.
+         *
+         *  The four counts above are cumulative — every won lead was also
+         *  contacted — which is right for a funnel and wrong for anything that
+         *  divides a total into shares. Drawn as slices they would sum to far
+         *  more than `leads` and each share would be a lie. These five are
+         *  disjoint by construction: an open lead is at exactly one stage, and
+         *  a closed one is in exactly one outcome. */
+        openNew: sql<number>`count(*) filter (
+          where ${opportunities.outcome} = 'open' and ${opportunities.contactedAt} is null
+        )`,
+        openContacted: sql<number>`count(*) filter (
+          where ${opportunities.outcome} = 'open'
+            and ${opportunities.contactedAt} is not null
+            and ${opportunities.advisedAt} is null
+        )`,
+        openAdvised: sql<number>`count(*) filter (
+          where ${opportunities.outcome} = 'open' and ${opportunities.advisedAt} is not null
+        )`,
       })
       .from(opportunities)
       .where(where)
@@ -85,6 +109,17 @@ export class ReportsService {
       gap: dealsToTarget(leads, target, won),
       steps,
       weakestStep: leads > 0 ? weakest.step : null,
+
+      /** Where every lead stands, in parts that add to `leads`. Ordered as the
+       *  work runs, so a chart drawn straight off it reads left to right the
+       *  way the branch talks about it. */
+      standing: [
+        { state: 'new' as const, value: Number(row?.openNew ?? 0) },
+        { state: 'contacted' as const, value: Number(row?.openContacted ?? 0) },
+        { state: 'advised' as const, value: Number(row?.openAdvised ?? 0) },
+        { state: 'won' as const, value: won },
+        { state: 'lost' as const, value: lost },
+      ].map((part) => ({ ...part, shareBps: rateBps(part.value, leads) })),
     }
   }
 
@@ -213,41 +248,97 @@ export class ReportsService {
       .sort((a, b) => b.total - a.total)
   }
 
-  /** Wins per calendar month, for the trend.
+  /** How each calendar month went: what was decided in it, and how that
+   *  compares with what the month was asked for.
    *
-   *  Dated by when the lead closed rather than when it was raised: a deal
-   *  landed in September belongs to September's figures however long it took
-   *  to get there.
+   *  Two different dates, deliberately, because the branch reads the month
+   *  that way:
    *
-   *  Only the months that have something in them. A chart padded out to
-   *  twelve bars, eleven of them empty, says the branch collapsed rather than
-   *  that the system is new. */
+   *  - `won` and `lost` are dated by **when the lead closed**. A deal landed
+   *    in September is September's however long it took to get there, and a
+   *    salesperson is paid for the month they closed it in.
+   *  - `leads` is dated by **when the lead was raised**, because that is what
+   *    the month was handed and what its target is set against.
+   *
+   *  So `targetWon` is the month's own lead intake at the branch's conversion
+   *  rate — not a quarterly target cut into three, which would draw a line
+   *  nobody agreed to. A month that closed more than its intake asked for goes
+   *  over a hundred percent, and should.
+   *
+   *  Only the months that have something in them. A chart padded out to twelve
+   *  bars, eleven of them empty, says the branch collapsed rather than that
+   *  the system is new. */
   async monthly(user: User, query: ReportQuery) {
     const scope = opportunityScope(this.db, user)
-    const parts: (SQL | undefined)[] = [scope, eq(opportunities.outcome, 'won')]
-    if (query.segment) parts.push(eq(opportunities.segment, query.segment))
-    if (query.ownerId) parts.push(eq(opportunities.ownerId, query.ownerId))
-    if (query.from) parts.push(gte(opportunities.closedAt, new Date(query.from)))
-    if (query.to) parts.push(lt(opportunities.closedAt, endOf(query.to)))
+    const target = await this.crTarget(user)
 
-    const defined = parts.filter((part): part is SQL => part !== undefined)
+    /** Everything but the dates, which is the one thing the two halves below
+     *  disagree about. */
+    const common: (SQL | undefined)[] = [scope]
+    if (query.segment) common.push(eq(opportunities.segment, query.segment))
+    if (query.ownerId) common.push(eq(opportunities.ownerId, query.ownerId))
 
-    const rows = await this.db
+    const within = (column: PgColumn) => {
+      const parts = [...common]
+      if (query.from) parts.push(gte(column, new Date(query.from)))
+      if (query.to) parts.push(lt(column, endOf(query.to)))
+      return and(...parts.filter((part): part is SQL => part !== undefined))
+    }
+
+    const closed = await this.db
       .select({
         month: sql<string>`to_char(${opportunities.closedAt}, 'YYYY-MM')`.as('month'),
-        won: count(),
-        value: sql<number>`coalesce(sum(${opportunities.value}), 0)`.mapWith(Number),
+        won: sql<number>`count(*) filter (where ${opportunities.outcome} = 'won')`.mapWith(Number),
+        lost: sql<number>`count(*) filter (where ${opportunities.outcome} = 'lost')`.mapWith(
+          Number,
+        ),
+        value: sql<number>`coalesce(sum(${opportunities.value}) filter (where ${opportunities.outcome} = 'won'), 0)`.mapWith(
+          Number,
+        ),
       })
       .from(opportunities)
-      .where(and(...defined))
+      .where(and(isNotNull(opportunities.closedAt), within(opportunities.closedAt)))
       .groupBy(sql`1`)
-      .orderBy(sql`1`)
 
-    return rows.map((row) => ({
-      month: row.month,
-      won: Number(row.won),
-      value: Number(row.value),
-    }))
+    const raised = await this.db
+      .select({
+        month: sql<string>`to_char(${opportunities.createdAt}, 'YYYY-MM')`.as('month'),
+        leads: count(),
+      })
+      .from(opportunities)
+      .where(within(opportunities.createdAt))
+      .groupBy(sql`1`)
+
+    const byMonth = new Map<string, MonthRow>()
+    const at = (month: string) => {
+      const found = byMonth.get(month) ?? { month, leads: 0, won: 0, lost: 0, value: 0 }
+      byMonth.set(month, found)
+      return found
+    }
+
+    for (const row of closed) {
+      const month = at(row.month)
+      month.won = Number(row.won)
+      month.lost = Number(row.lost)
+      month.value = Number(row.value)
+    }
+    for (const row of raised) at(row.month).leads = Number(row.leads)
+
+    return [...byMonth.values()]
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .map((row) => {
+        /** What this month's intake asks for, at the branch's rate. Rounded
+         *  to whole deals because half a deal cannot be closed. */
+        const targetWon = Math.round((row.leads * target) / BPS_PER_UNIT)
+        return {
+          ...row,
+          targetBps: target,
+          targetWon,
+          /** Zero rather than infinity in a month that took no leads at all:
+           *  nothing was asked of it, so nothing is outstanding. */
+          doneBps: rateBps(row.won, targetWon),
+        }
+      })
   }
 
   /** The conversion rate this person is measured against, in basis points.
