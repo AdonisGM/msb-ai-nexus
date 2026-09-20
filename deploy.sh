@@ -114,7 +114,17 @@ cmd_build() {
 cmd_pull()    { need_run_env; say "kéo ảnh"; dc pull; }
 cmd_up()      { need_run_env; say "bật"; dc up -d --remove-orphans "$@"; dc ps; }
 cmd_down()    { need_run_env; say "tắt (dữ liệu trong volume vẫn còn)"; dc down "$@"; }
-cmd_restart() { need_run_env; dc restart "$@"; }
+# Khởi động lại tiến trình, KHÔNG nạp lại .env.
+#
+# `docker compose restart` chạy lại đúng container đang có, mà biến môi trường
+# thì gắn vào container lúc TẠO. Sửa .env rồi restart là biến mới không bao giờ
+# tới nơi — và không có gì báo lỗi, container vẫn xanh, chỉ là chạy bằng bộ
+# biến cũ. Sửa .env thì dùng `up` (tạo lại container) hoặc `deploy`.
+cmd_restart() {
+  need_run_env
+  warn "restart KHÔNG nạp lại .env. Vừa sửa .env thì dùng: ./deploy.sh up ${*:-}"
+  dc restart "$@"
+}
 cmd_ps()      { need_run_env; dc ps; }
 cmd_logs()    { need_run_env; dc logs -f --tail=100 "$@"; }
 cmd_psql()    { need_run_env; dc exec db psql -U nexus -d "$DB" "$@"; }
@@ -195,7 +205,8 @@ Dùng: ./deploy.sh <lệnh> [tham số]
   pull              kéo ảnh theo TAG trong .env
   up / down         bật, tắt (volume dữ liệu vẫn còn)
   deploy            pull rồi thay container, migration tự chạy
-  restart [dv]      khởi động lại một service
+  restart [dv]      khởi động lại tiến trình — KHÔNG nạp lại .env
+  up [dv]           tạo lại container, có nạp .env mới
   ps / logs [dv]    trạng thái, nhật ký
   psql [...]        mở psql trong container db
   seed              ghi sáu tài khoản vận hành
