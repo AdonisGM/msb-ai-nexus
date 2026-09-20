@@ -29,15 +29,24 @@ ok()   { printf '%s\n' "${G}✓   $*$N"; }
 # ── .env là bắt buộc ────────────────────────────────────────────────────────
 # Thiếu nó thì compose lặng lẽ dùng chuỗi rỗng cho mọi biến, và cái hỏng đầu
 # tiên sẽ là cookie đăng nhập chứ không phải một thông báo lỗi.
+# Hai máy đọc cùng một script nhưng cần hai bộ biến khác nhau, nên mỗi lệnh
+# khai đúng bộ của nó. Đòi chung một danh sách thì máy chủ bị chặn vì thiếu
+# VITE_API_BASE — thứ đã nằm sẵn trong ảnh web từ lúc build và máy chủ không
+# có cách nào dùng tới.
 need_env() {
-  [ -f "$ENV_FILE" ] || die "chưa có $ENV_FILE. Chép từ .env.example rồi điền:  cp .env.example .env"
+  [ -f "$ENV_FILE" ] || die "chưa có $ENV_FILE. Chép mẫu rồi điền:  cp env.example .env"
   set -a; . "./$ENV_FILE"; set +a
   local missing=()
-  for v in REGISTRY IMAGE_NS WEB_ORIGIN VITE_API_BASE POSTGRES_PASSWORD; do
+  for v in REGISTRY IMAGE_NS "$@"; do
     [ -n "${!v:-}" ] || missing+=("$v")
   done
   [ ${#missing[@]} -eq 0 ] || die "$ENV_FILE thiếu giá trị: ${missing[*]}"
 }
+
+# Ở máy phát triển: đủ để dựng và đẩy ảnh.
+need_build_env() { need_env VITE_API_BASE; }
+# Ở máy chủ: đủ để compose dựng được container.
+need_run_env()   { need_env WEB_ORIGIN POSTGRES_PASSWORD; }
 
 dc() { docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
 
@@ -59,7 +68,7 @@ pick() {  # pick <đối số còn lại...> → danh sách service hợp lệ
 # x86 thì thêm linux/amd64 vào --platform, nhưng bản ấy dựng bằng giả lập nên
 # chậm hơn nhiều.
 cmd_build() {
-  need_env
+  need_build_env
   command -v git >/dev/null || die "cần git để lấy mã bản dựng"
   local tag; tag=$(git rev-parse --short HEAD)
   if [ -n "$(git status --porcelain)" ]; then
@@ -91,17 +100,17 @@ cmd_build() {
   note "đặt TAG=$tag trong .env của máy chủ để ghim đúng bản này"
 }
 
-cmd_pull()    { need_env; say "kéo ảnh"; dc pull; }
-cmd_up()      { need_env; say "bật"; dc up -d --remove-orphans "$@"; dc ps; }
-cmd_down()    { need_env; say "tắt (dữ liệu trong volume vẫn còn)"; dc down "$@"; }
-cmd_restart() { need_env; dc restart "$@"; }
-cmd_ps()      { need_env; dc ps; }
-cmd_logs()    { need_env; dc logs -f --tail=100 "$@"; }
-cmd_psql()    { need_env; dc exec db psql -U nexus -d "$DB" "$@"; }
+cmd_pull()    { need_run_env; say "kéo ảnh"; dc pull; }
+cmd_up()      { need_run_env; say "bật"; dc up -d --remove-orphans "$@"; dc ps; }
+cmd_down()    { need_run_env; say "tắt (dữ liệu trong volume vẫn còn)"; dc down "$@"; }
+cmd_restart() { need_run_env; dc restart "$@"; }
+cmd_ps()      { need_run_env; dc ps; }
+cmd_logs()    { need_run_env; dc logs -f --tail=100 "$@"; }
+cmd_psql()    { need_run_env; dc exec db psql -U nexus -d "$DB" "$@"; }
 
 # Kéo bản mới rồi thay tại chỗ. Migration tự chạy lúc API khởi động.
 cmd_deploy() {
-  need_env
+  need_run_env
   cmd_pull
   say "thay container bằng bản mới"
   dc up -d --remove-orphans
@@ -111,7 +120,7 @@ cmd_deploy() {
 
 # Sáu tài khoản vận hành. Không đụng tới khách hàng hay cơ hội.
 cmd_seed() {
-  need_env
+  need_run_env
   [ -n "${SEED_PASSWORD:-}" ] || die "$ENV_FILE thiếu SEED_PASSWORD"
   say "ghi tài khoản"
   dc exec api node dist/seed.js
@@ -119,7 +128,7 @@ cmd_seed() {
 
 # Dữ liệu mẫu. XOÁ toàn bộ khách hàng, cơ hội và chỉ tiêu đang có.
 cmd_seed_demo() {
-  need_env
+  need_run_env
   [ -n "${SEED_PASSWORD:-}" ] || die "$ENV_FILE thiếu SEED_PASSWORD"
   warn "lệnh này xoá sạch khách hàng, cơ hội và chỉ tiêu rồi dựng lại dữ liệu mẫu"
   read -rp "    gõ 'demo' để tiếp tục: " answer
@@ -130,7 +139,7 @@ cmd_seed_demo() {
 
 # Sao lưu trước mọi thứ có thể hỏng. Nén ngay, và giữ tên theo giờ máy chủ.
 cmd_backup() {
-  need_env
+  need_run_env
   mkdir -p "$BACKUP_DIR"
   local file="$BACKUP_DIR/nexus-$(date +%Y%m%d-%H%M%S).sql.gz"
   say "sao lưu $DB"
@@ -139,7 +148,7 @@ cmd_backup() {
 }
 
 cmd_restore() {
-  need_env
+  need_run_env
   local file=${1:?dùng: ./deploy.sh restore <tệp.sql.gz>}
   [ -f "$file" ] || die "không thấy $file"
   warn "lệnh này GHI ĐÈ toàn bộ cơ sở dữ liệu $DB bằng nội dung $file"
