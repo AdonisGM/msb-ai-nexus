@@ -59,6 +59,10 @@ services:
       # bình thường, chỉ riêng phần gợi ý là chưa cấu hình.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AI_MODE: ${AI_MODE:-live}
+      # Theo dõi lượt dùng AI. Bỏ trống thì trợ lý chạy y nguyên, không đo gì.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/public/health"]
       interval: 15s

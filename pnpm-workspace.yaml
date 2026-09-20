@@ -4,3 +4,7 @@ packages:
 # drizzle-kit needs esbuild to fetch its binary during install
 allowBuilds:
   esbuild: true
+  # protobufjs ships an install script that regenerates its typings. Nothing
+  # here imports it directly — it arrives under the OpenTelemetry exporter —
+  # and skipping it changes nothing at runtime.
+  protobufjs: false

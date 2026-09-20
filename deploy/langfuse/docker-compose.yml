@@ -1,0 +1,190 @@
+# Langfuse tự dựng — một bản cho nhiều dự án.
+#
+# Đây là hạ tầng dùng chung, không phải một phần của AI Nexus. Nó nằm trong kho
+# này vì AI Nexus là dự án đầu tiên gửi dữ liệu vào, nhưng cứ chép cả thư mục
+# `deploy/langfuse` sang chỗ khác là chạy được độc lập.
+#
+#   cd deploy/langfuse
+#   cp .env.example .env     # rồi sinh khoá, xem ghi chú trong đó
+#   docker compose up -d
+#
+# Một bản chạy phục vụ **nhiều tổ chức và nhiều dự án**, mỗi dự án có cặp khoá
+# riêng. Tạo dự án mới trên giao diện, lấy `pk-lf-…` / `sk-lf-…` của nó rồi điền
+# vào .env của dự án đó. Dữ liệu các dự án không nhìn thấy nhau.
+#
+# Sáu container, vì Langfuse tách rõ từng việc:
+#
+#   web        giao diện và API nhận span
+#   worker     xử lý hàng đợi, gom số, tính chi phí
+#   postgres   cấu hình, người dùng, dự án, khoá
+#   clickhouse trace và span — cột, vì đây là nơi đọc thống kê
+#   redis      hàng đợi giữa web và worker
+#   minio      S3 nội bộ, chứa payload span lớn và file xuất
+#
+# Langfuse khuyến nghị 4 nhân / 16 GiB. Ít hơn vẫn chạy được cho lượng dữ liệu
+# một hai dự án nhỏ, nhưng ClickHouse là cái ăn RAM — hụt thì nó chết trước.
+#
+# Cổng theo dải 45xx như các dịch vụ khác, và **chỉ mở cho chính máy chủ**.
+# Đặt nginx trước cổng web rồi cấp HTTPS; đừng phơi thẳng, vì giao diện này
+# nhìn được toàn bộ nội dung prompt của mọi dự án.
+
+name: langfuse
+
+x-lf-env: &lf-env
+  DATABASE_URL: postgresql://langfuse:${POSTGRES_PASSWORD:?thiếu POSTGRES_PASSWORD}@postgres:5432/langfuse
+  SALT: ${SALT:?thiếu SALT}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?thiếu ENCRYPTION_KEY}
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?thiếu CLICKHOUSE_PASSWORD}
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_AUTH: ${REDIS_PASSWORD:?thiếu REDIS_PASSWORD}
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_USER:-minio}
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:?thiếu MINIO_PASSWORD}
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_USER:-minio}
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:?thiếu MINIO_PASSWORD}
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_BATCH_EXPORT_BUCKET: langfuse
+  LANGFUSE_S3_BATCH_EXPORT_REGION: auto
+  LANGFUSE_S3_BATCH_EXPORT_ENDPOINT: http://minio:9000
+  LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID: ${MINIO_USER:-minio}
+  LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:?thiếu MINIO_PASSWORD}
+  LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE: "true"
+  TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-false}
+
+services:
+  web:
+    image: docker.langfuse.com/langfuse/langfuse:4
+    container_name: langfuse-web
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      <<: *lf-env
+      NEXTAUTH_URL: ${NEXTAUTH_URL:?thiếu NEXTAUTH_URL}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?thiếu NEXTAUTH_SECRET}
+      # Tắt đăng ký sau khi đã tạo tài khoản đầu tiên. Giao diện này đọc được
+      # toàn bộ prompt của mọi dự án, nên không để ai tự mở tài khoản.
+      AUTH_DISABLE_SIGNUP: ${AUTH_DISABLE_SIGNUP:-false}
+      # Dựng sẵn tổ chức, dự án đầu tiên, khoá và tài khoản quản trị ngay lần
+      # chạy đầu — khỏi phải vào giao diện bấm tay rồi chép khoá ra. Chỉ có tác
+      # dụng trên cơ sở dữ liệu còn trống; chạy lại lần sau không đụng gì.
+      #
+      # Dự án thứ hai trở đi thì tạo trên giao diện, mỗi dự án một cặp khoá
+      # riêng và không nhìn thấy dữ liệu của nhau.
+      LANGFUSE_INIT_ORG_ID: ${INIT_ORG_ID:-}
+      LANGFUSE_INIT_ORG_NAME: ${INIT_ORG_NAME:-}
+      LANGFUSE_INIT_PROJECT_ID: ${INIT_PROJECT_ID:-}
+      LANGFUSE_INIT_PROJECT_NAME: ${INIT_PROJECT_NAME:-}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${INIT_PUBLIC_KEY:-}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${INIT_SECRET_KEY:-}
+      LANGFUSE_INIT_USER_EMAIL: ${INIT_USER_EMAIL:-}
+      LANGFUSE_INIT_USER_NAME: ${INIT_USER_NAME:-}
+      LANGFUSE_INIT_USER_PASSWORD: ${INIT_USER_PASSWORD:-}
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${PORT_WEB:-4520}:3000"
+
+  worker:
+    image: docker.langfuse.com/langfuse/langfuse-worker:4
+    container_name: langfuse-worker
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment: *lf-env
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: langfuse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?thiếu POSTGRES_PASSWORD}
+      POSTGRES_DB: langfuse
+    volumes:
+      - lf-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    container_name: langfuse-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?thiếu CLICKHOUSE_PASSWORD}
+    # Mặc định ClickHouse chỉ cho mở 1024 tệp; trên máy chủ thật nó cần nhiều
+    # hơn thế và sẽ báo lỗi ngay lúc khởi động nếu không nới.
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - lf-clickhouse-data:/var/lib/clickhouse
+      - lf-clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: langfuse-redis
+    restart: unless-stopped
+    command: >
+      --requirepass ${REDIS_PASSWORD:?thiếu REDIS_PASSWORD}
+      --maxmemory-policy noeviction
+    volumes:
+      - lf-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    # Ảnh Chainguard, không phải minio/minio — Docker Hub đã đóng repo đó và
+    # `pull` trả về "access denied". Đây cũng là ảnh compose gốc của Langfuse
+    # đang dùng.
+    image: cgr.dev/chainguard/minio:latest
+    container_name: langfuse-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:?thiếu MINIO_PASSWORD}
+    # Tạo sẵn bucket rồi mới chạy: Langfuse không tự tạo, và thiếu nó thì span
+    # vào tới nơi mà không lưu được.
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && exec minio server /data --address ":9000" --console-address ":9001"'
+    volumes:
+      - lf-minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  lf-postgres:
+  lf-clickhouse-data:
+  lf-clickhouse-logs:
+  lf-redis:
+  lf-minio:

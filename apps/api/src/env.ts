@@ -39,5 +39,29 @@ export const WEB_ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:5273'
  *  that header to the single address it resolved. */
 export const TRUST_PROXY = Number(process.env.TRUST_PROXY ?? 0)
 
+/** The key the assistant talks to Anthropic with.
+ *
+ *  Allowed to be absent, and deliberately so: the branch's own screens — the
+ *  customer book, the funnel, the figures — are the part that has to work at a
+ *  demo, and none of them need a model. A missing key turns the assistant off
+ *  and leaves everything else running, rather than refusing to boot. */
+export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? ''
+
+/** `live` talks to the model. `off` answers every AI request with a plain
+ *  "not configured", which is also what an empty key does.
+ *
+ *  A switch rather than only the key's presence, so a key that exists can be
+ *  silenced without being deleted — during a rehearsal, or when a demo runs on
+ *  a laptop nobody wants billing from. */
+export const AI_ENABLED = (process.env.AI_MODE ?? 'live') === 'live' && ANTHROPIC_API_KEY !== ''
+
+/** Whether AI turns are reported to Langfuse.
+ *
+ *  Both keys or nothing. A public key on its own reaches an endpoint that
+ *  rejects it on every turn, which is a stream of warnings rather than a
+ *  feature — and the assistant itself works identically either way. */
+export const LANGFUSE_ENABLED =
+  Boolean(process.env.LANGFUSE_PUBLIC_KEY) && Boolean(process.env.LANGFUSE_SECRET_KEY)
+
 /* Cookie and session settings live in config/auth-config.ts, not here, so
  * there is one owner for them rather than two that can drift apart. */

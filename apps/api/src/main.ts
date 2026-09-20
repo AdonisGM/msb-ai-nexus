@@ -1,4 +1,8 @@
 import './env'
+/** Before anything else that might emit a span. */
+import { startTracing, stopTracing } from './ai/tracing'
+
+startTracing()
 
 import { ValidationPipe } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
@@ -11,6 +15,14 @@ import { PORT, TRUST_PROXY, WEB_ORIGIN } from './env'
 
 async function bootstrap() {
   await runMigrations()
+
+  /** Spans are batched, so a process that exits without flushing loses the
+   *  last few turns — usually the ones somebody is trying to look at. */
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      void stopTracing().finally(() => process.exit(0))
+    })
+  }
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule)
 
