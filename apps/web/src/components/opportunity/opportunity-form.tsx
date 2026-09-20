@@ -1,7 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { BLOCKER_CODES, PRODUCTS, createOpportunity, type Product } from '~/api/opportunities'
+import {
+  BLOCKER_CODES,
+  PRODUCTS,
+  createOpportunity,
+  updateOpportunity,
+  type Opportunity,
+  type Product,
+} from '~/api/opportunities'
 import { inputBase } from '~/components/ui/form-controls'
 import { Modal } from '~/components/ui/modal'
 import { Button, cx } from '~/components/ui/primitives'
@@ -22,10 +29,15 @@ import { fmtMoney } from '~/lib/format'
  *  the one figure the branch is judged on. */
 export function OpportunityForm({
   customerId,
+  editing,
   open,
   onClose,
 }: {
-  customerId: string
+  /** Which customer a new lead hangs off. Ignored when editing — a lead never
+   *  changes hands between customers. */
+  customerId?: string
+  /** Present when correcting a lead rather than opening one. */
+  editing?: Opportunity
   open: boolean
   onClose: () => void
 }) {
@@ -39,6 +51,8 @@ export function OpportunityForm({
   const [nextAction, setNextAction] = useState('')
   const [blockerCode, setBlockerCode] = useState('')
   const [blockerNote, setBlockerNote] = useState('')
+  const [missingInfo, setMissingInfo] = useState('')
+  const [reason, setReason] = useState('')
 
   const amount = Number(value.replace(/[^0-9]/g, '')) || 0
 
@@ -50,12 +64,32 @@ export function OpportunityForm({
     setNextAction('')
     setBlockerCode('')
     setBlockerNote('')
+    setMissingInfo('')
+    setReason('')
   }
 
+  /** Refilled each time it opens, so correcting one lead never shows another's
+   *  values for a frame. */
+  useEffect(() => {
+    if (!open) return
+    if (!editing) {
+      reset()
+      return
+    }
+    setProduct(editing.product)
+    setNeed(editing.need)
+    setValue(String(editing.value))
+    setDueDate(editing.dueDate ?? '')
+    setNextAction(editing.nextAction ?? '')
+    setBlockerCode(editing.blockerCode ?? '')
+    setBlockerNote(editing.blockerNote ?? '')
+    setMissingInfo(editing.missingInfo.join(', '))
+    setReason('')
+  }, [open, editing])
+
   const save = useMutation({
-    mutationFn: () =>
-      createOpportunity({
-        customerId,
+    mutationFn: () => {
+      const shared = {
         product,
         need: need.trim(),
         value: amount,
@@ -63,13 +97,23 @@ export function OpportunityForm({
         nextAction: nextAction.trim() || undefined,
         blockerCode: blockerCode || undefined,
         blockerNote: blockerNote.trim() || undefined,
-      }),
+        missingInfo: missingInfo
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean),
+      }
+
+      if (editing) {
+        return updateOpportunity(editing.id, { ...shared, reason: reason.trim() || undefined })
+      }
+      return createOpportunity({ ...shared, customerId: customerId! })
+    },
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['opportunities'] }),
         queryClient.invalidateQueries({ queryKey: ['customers'] }),
       ])
-      toast.success(t('opportunities.created'))
+      toast.success(editing ? 'Đã lưu thay đổi' : t('opportunities.created'))
       reset()
       onClose()
     },
@@ -86,15 +130,19 @@ export function OpportunityForm({
         onClose()
       }}
       width={560}
-      title={t('opportunities.newTitle')}
-      subtitle={t('opportunities.newSubtitle')}
+      title={editing ? 'Sửa cơ hội' : t('opportunities.newTitle')}
+      subtitle={editing ? editing.code : t('opportunities.newSubtitle')}
       footer={
         <>
           <Button size="lg" onClick={onClose}>
             {t('common.cancel')}
           </Button>
           <Button size="lg" variant="primary" disabled={!ready} onClick={() => save.mutate()}>
-            {save.isPending ? t('opportunities.creating') : t('opportunities.create')}
+            {save.isPending
+              ? t('opportunities.creating')
+              : editing
+                ? 'Lưu thay đổi'
+                : t('opportunities.create')}
           </Button>
         </>
       }
@@ -198,6 +246,33 @@ export function OpportunityForm({
           ))}
         </div>
       </div>
+
+      <Field label="Còn thiếu thông tin gì">
+        <input
+          value={missingInfo}
+          onChange={(event) => setMissingInfo(event.target.value)}
+          placeholder="Sao kê 12 tháng, chứng thư định giá"
+          className={inputBase}
+        />
+        <span className="text-[11px] text-muted">Phân tách bằng dấu phẩy.</span>
+      </Field>
+
+      {editing ? (
+        <Field label={`${t('actions.reason')} · ${t('common.optional')}`}>
+          <input
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="Khách đổi số tiền cần vay"
+            className={inputBase}
+          />
+          {/** The before and after are recorded whatever happens; this is the
+            *  line that says why, and it is the only part a reader of the trail
+            *  cannot work out for themselves. */}
+          <span className="text-[11px] text-muted">
+            Ghi vào vết xử lý, cạnh giá trị trước và sau.
+          </span>
+        </Field>
+      ) : null}
 
       {blockerCode ? (
         <Field label={t('field.blockerNote')}>

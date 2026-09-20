@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
@@ -8,13 +9,24 @@ import {
   type Opportunity,
 } from '~/api/opportunities'
 import { ActionBar } from '~/components/opportunity/action-bar'
+import { OpportunityForm } from '~/components/opportunity/opportunity-form'
 import { Button, Card, Chip, Money, Mono, cx } from '~/components/ui/primitives'
 import { BlockSkeleton, ErrorState } from '~/components/ui/query-state'
 import { t, tCode } from '~/i18n'
 import { daysSince, daysUntil, vnDate } from '~/lib/dates'
 import { fmtDuration, fmtMoney, fmtNum } from '~/lib/format'
 
-export const Route = createFileRoute('/_app/opportunities/$id')({ component: OpportunityScreen })
+/** Where the reader came from, so "back" lands where they expect.
+ *
+ *  A lead is reachable from two places — the opportunity list and a customer's
+ *  file — and a back link that always goes to the list drops somebody who came
+ *  from a customer onto a screen they were not on. Carried in the URL rather
+ *  than in memory so it survives a refresh and a shared link. */
+export const Route = createFileRoute('/_app/opportunities/$id')({
+  component: OpportunityScreen,
+  validateSearch: (search: Record<string, unknown>): { from?: 'customer' } =>
+    search.from === 'customer' ? { from: 'customer' } : {},
+})
 
 /** One lead, everything that is true about it and everything that has
  *  happened to it.
@@ -25,13 +37,15 @@ export const Route = createFileRoute('/_app/opportunities/$id')({ component: Opp
  *  this screen with. */
 function OpportunityScreen() {
   const { id } = Route.useParams()
+  const { from } = Route.useSearch()
   const navigate = useNavigate()
   const query = useQuery(opportunityQuery(id))
+  const [editing, setEditing] = useState(false)
 
   if (query.isError) {
     return (
       <div className="flex flex-col gap-4">
-        <BackLink />
+        <BackLink from={from} />
         <ErrorState what="cơ hội" error={query.error} onRetry={() => void query.refetch()} />
       </div>
     )
@@ -40,7 +54,7 @@ function OpportunityScreen() {
   if (query.isPending) {
     return (
       <div className="flex flex-col gap-4">
-        <BackLink />
+        <BackLink from={from} />
         <BlockSkeleton rows={6} />
       </div>
     )
@@ -50,7 +64,7 @@ function OpportunityScreen() {
 
   return (
     <div className="flex flex-col gap-3.5">
-      <BackLink />
+      <BackLink from={from} customer={{ id: deal.customerId, name: deal.customerName }} />
 
       <Card className="px-5 py-[18px]">
         <div className="flex flex-wrap items-start gap-4">
@@ -108,9 +122,25 @@ function OpportunityScreen() {
 
         <div className="mt-3.5 flex flex-wrap items-center gap-2 border-t border-line pt-3.5">
           <ActionBar deal={deal} />
+          {/** Only while the lead is live. A closed deal is a figure somebody
+            *  has already acted on, and the server refuses to edit one — so
+            *  the button is absent rather than present and rejected. Correcting
+            *  a closed lead means reopening it first, which leaves a trace. */}
+          {deal.outcome === 'open' ? (
+            <Button size="sm" onClick={() => setEditing(true)}>
+              Sửa thông tin
+            </Button>
+          ) : null}
           <span className="ml-auto">
-            <Button size="md" onClick={() => void navigate({ to: '/opportunities' })}>
-              Quay lại danh sách
+            <Button
+              size="md"
+              onClick={() =>
+                void (from === 'customer'
+                  ? navigate({ to: '/customers/$id', params: { id: deal.customerId } })
+                  : navigate({ to: '/opportunities' }))
+              }
+            >
+              {from === 'customer' ? 'Quay lại khách hàng' : 'Quay lại danh sách'}
             </Button>
           </span>
         </div>
@@ -125,6 +155,8 @@ function OpportunityScreen() {
           <Trace id={deal.id} />
         </div>
       </div>
+
+      <OpportunityForm editing={deal} open={editing} onClose={() => setEditing(false)} />
     </div>
   )
 }
@@ -334,12 +366,30 @@ function muted(text: string) {
   return <span className="text-muted">{text}</span>
 }
 
-function BackLink() {
+function BackLink({
+  from,
+  customer,
+}: {
+  from?: 'customer'
+  customer?: { id: string; name: string }
+}) {
+  const style =
+    'flex w-fit items-center gap-1.5 text-[12.5px] text-muted transition-colors hover:text-ink'
+
+  /** Names the destination rather than saying "quay lại": somebody who has
+   *  been reading for a minute no longer remembers which list they opened
+   *  this from, and the name answers that without being clicked. */
+  if (from === 'customer' && customer) {
+    return (
+      <Link to="/customers/$id" params={{ id: customer.id }} className={style}>
+        <ArrowLeft size={14} />
+        {customer.name}
+      </Link>
+    )
+  }
+
   return (
-    <Link
-      to="/opportunities"
-      className="flex w-fit items-center gap-1.5 text-[12.5px] text-muted transition-colors hover:text-ink"
-    >
+    <Link to="/opportunities" className={style}>
       <ArrowLeft size={14} />
       {t('nav.opportunities')}
     </Link>

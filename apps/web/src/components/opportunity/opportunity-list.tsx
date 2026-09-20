@@ -1,4 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
+import { ChevronRight } from 'lucide-react'
 import { opportunitiesQuery, type Opportunity } from '~/api/opportunities'
 import { ActionBar } from '~/components/opportunity/action-bar'
 import { Chip, Money, cx } from '~/components/ui/primitives'
@@ -50,13 +52,33 @@ export function OpportunityList({ customerId }: { customerId: string }) {
 }
 
 function Block({ deal }: { deal: Opportunity }) {
+  const navigate = useNavigate()
+  /** `from` so the lead's own back link comes back here rather than dropping
+   *  the reader on the opportunity list, which they were never on. */
+  const open = () =>
+    void navigate({
+      to: '/opportunities/$id',
+      params: { id: deal.id },
+      search: { from: 'customer' },
+    })
   const silent = daysSince(deal.lastTouchAt)
   /** Two weeks of nothing on a live lead is the number a team lead chases, so
    *  it is said in red rather than left for somebody to work out. */
   const cold = deal.outcome === 'open' && silent !== null && silent >= 14
 
   return (
-    <div className="flex flex-col gap-2.5 rounded-lg border border-line bg-raised px-3.5 py-3">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          open()
+        }
+      }}
+      className="flex cursor-pointer flex-col gap-2.5 rounded-lg border border-line bg-raised px-3.5 py-3 transition-colors hover:border-line2 focus:border-line2 focus:outline-none"
+    >
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[13px] font-medium">{t(`product.${deal.product}`)}</span>
         <span className="font-mono text-[11px] text-muted">{deal.code}</span>
@@ -70,8 +92,9 @@ function Block({ deal }: { deal: Opportunity }) {
         {deal.createdVia === 'ai' ? (
           <Chip tone={{ fg: 'var(--pending)', bg: 'var(--pending-soft)' }}>Máy đề xuất</Chip>
         ) : null}
-        <span className="ml-auto">
+        <span className="ml-auto flex items-center gap-2">
           <Money value={fmtMoney(deal.value)} size="md" />
+          <ChevronRight size={15} className="flex-none text-muted" />
         </span>
       </div>
 
@@ -127,7 +150,16 @@ function Block({ deal }: { deal: Opportunity }) {
 
       {deal.outcome !== 'open' ? <SignLine deal={deal} /> : null}
 
-      <div className="pt-0.5">
+      {/** The buttons sit inside a clickable card, so their clicks are stopped
+        *  here rather than opening the lead behind the dialog they just
+        *  opened. The modal itself is portalled out of this tree, so nothing
+        *  inside it bubbles back. */}
+      <div
+        className="pt-0.5"
+        role="presentation"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
         <ActionBar deal={deal} />
       </div>
     </div>

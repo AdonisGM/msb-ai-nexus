@@ -207,6 +207,32 @@ export function createOpportunity(body: NewOpportunity) {
   return api<Opportunity>('/opportunities', { method: 'POST', body })
 }
 
+/** An edit in place. Never the customer, the owner or the funnel: the first
+ *  would move a lead into another segment's numbers, the second is a handover
+ *  with its own endpoint, and the third is only ever the consequence of
+ *  pressing a button.
+ *
+ *  Refused once the lead has landed. A closed deal is a figure somebody has
+ *  already acted on, so correcting one means reopening it first — which leaves
+ *  a trace. */
+export type OpportunityPatch = {
+  product?: Product
+  need?: string
+  value?: number
+  dueDate?: string
+  nextAction?: string
+  blockerCode?: string
+  blockerNote?: string
+  missingInfo?: string[]
+  /** Why the edit was made. Optional, and it lands in the trail beside the
+   *  before and after. */
+  reason?: string
+}
+
+export function updateOpportunity(id: string, body: OpportunityPatch) {
+  return api<Opportunity>(`/opportunities/${id}`, { method: 'PATCH', body })
+}
+
 export type ActBody = {
   reason?: string
   /** Required on `win`, ignored everywhere else. A win that names no product
