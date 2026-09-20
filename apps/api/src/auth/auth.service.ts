@@ -31,4 +31,25 @@ export class AuthService {
 
     return user
   }
+
+  /** The person an account reports to, for the line under their name.
+   *
+   *  Sent with the session rather than fetched per screen: a salesperson needs
+   *  to know who signs off their wins and who is chasing them, and `managerId`
+   *  on its own is an opaque id the web app cannot render.
+   *
+   *  Lives here rather than in UsersService so the dependency runs one way —
+   *  the users module needs the auth guard, and the reverse edge would be a
+   *  cycle for the sake of one query. */
+  async managerOf(user: User) {
+    if (!user.managerId) return null
+
+    const [row] = await this.db
+      .select({ id: users.id, name: users.name, role: users.role, title: users.title })
+      .from(users)
+      .where(eq(users.id, user.managerId))
+      .limit(1)
+
+    return row ?? null
+  }
 }

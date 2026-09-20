@@ -4,11 +4,12 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Max,
   Matches,
   MaxLength,
   Min,
 } from 'class-validator'
-import { SEGMENTS, TARGET_SCOPES } from '../db/schema'
+import { BPS_PER_UNIT, SEGMENTS, TARGET_METRICS, TARGET_SCOPES } from '../db/schema'
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value
@@ -25,6 +26,10 @@ export class ListTargetsDto {
   @IsOptional()
   @IsIn(TARGET_SCOPES)
   scope?: string
+
+  @IsOptional()
+  @IsIn(TARGET_METRICS)
+  metric?: string
 }
 
 export class SetTargetDto {
@@ -46,10 +51,25 @@ export class SetTargetDto {
   @Matches(PERIOD, { message: 'period_invalid' })
   period!: string
 
-  /** Whole đồng. */
+  /** What is being measured. The branch runs on `cr_rate` — every report says
+   *  "6% CR" — so that is the default. Money and deal-count targets exist
+   *  beside it rather than instead of it, because a conversion rate says
+   *  nothing about whether the deals were worth having. */
+  @IsOptional()
+  @IsIn(TARGET_METRICS, { message: 'metric_invalid' })
+  metric?: string
+
+  /** In the unit its metric implies: basis points for `cr_rate` (600 = 6%),
+   *  a count for `deals`, whole đồng for `value`.
+   *
+   *  Basis points rather than a decimal so the gap arithmetic stays in
+   *  integers — a rate stored as a float turns "did we hit 6%" into a question
+   *  about rounding. The upper bound is checked in the service, where the
+   *  metric is known. */
   @Type(() => Number)
   @IsInt()
   @Min(1, { message: 'amount_must_be_positive' })
+  @Max(BPS_PER_UNIT * 1_000_000_000_000, { message: 'amount_too_large' })
   amount!: number
 
   @IsOptional()

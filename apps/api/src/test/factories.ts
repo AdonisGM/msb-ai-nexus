@@ -1,8 +1,10 @@
 import { hashSync } from 'bcryptjs'
+import { eq } from 'drizzle-orm'
 import {
   auditEvents,
   customers,
   opportunities,
+  opportunityProducts,
   signals,
   targets,
   units,
@@ -10,6 +12,7 @@ import {
   type AuditEvent,
   type Customer,
   type Opportunity,
+  type OpportunityProduct,
   type Signal,
   type Target,
   type Unit,
@@ -70,6 +73,7 @@ export async function makeUser(overrides: MakeUser = {}): Promise<User> {
     .values({
       id,
       code: rest.code ?? id.toUpperCase(),
+      employeeCode: rest.employeeCode ?? id.toUpperCase(),
       name: rest.name ?? `User ${id}`,
       passwordHash: password ? hashSync(password, 4) : TEST_PASSWORD_HASH,
       role,
@@ -162,19 +166,73 @@ export async function makeSignal(
   return row
 }
 
+/** A lead.
+ *
+ *  The funnel marks and the close mark are derived from `stage` and `outcome`
+ *  rather than left to the caller, because the schema locks them together: a
+ *  test that says `stage: 'advised'` means "this lead has been advised", not
+ *  "please also remember two timestamps". Passing a mark explicitly — `null`
+ *  included — is left alone, so a test can still aim at the constraint. */
 export async function makeOpportunity(
   overrides: Partial<Opportunity> & { customerId: string; ownerId: string },
 ): Promise<Opportunity> {
   const id = overrides.id ?? nextId('opp')
+  const stage = overrides.stage ?? 'new'
+  const outcome = overrides.outcome ?? 'open'
+  const now = new Date()
+
+  /** The branch that raised the lead. Read off the owner rather than asked
+   *  for, because every caller would otherwise have to pass the same value it
+   *  already implied by naming an owner. */
+  const unitId =
+    overrides.unitId ??
+    (
+      await testDb
+        .select({ unitId: users.unitId })
+        .from(users)
+        .where(eq(users.id, overrides.ownerId))
+        .limit(1)
+    )[0]?.unitId
+
+  const derived = {
+    contactedAt: stage === 'new' ? null : now,
+    advisedAt: stage === 'advised' ? now : null,
+    closedAt: outcome === 'open' ? null : now,
+    outcomeReason: outcome === 'open' ? null : 'Recorded by a test',
+  }
+
   const [row] = await testDb
     .insert(opportunities)
     .values({
       id,
       code: overrides.code ?? id.toUpperCase(),
       segment: overrides.segment ?? 'rb',
-      product: overrides.product ?? 'Mortgage',
+      unitId,
+      product: overrides.product ?? 'loan',
       need: overrides.need ?? 'Buy a home',
       value: overrides.value ?? 1_000_000_000,
+      ...overrides,
+      stage,
+      outcome,
+      contactedAt: 'contactedAt' in overrides ? overrides.contactedAt : derived.contactedAt,
+      advisedAt: 'advisedAt' in overrides ? overrides.advisedAt : derived.advisedAt,
+      closedAt: 'closedAt' in overrides ? overrides.closedAt : derived.closedAt,
+      outcomeReason:
+        'outcomeReason' in overrides ? overrides.outcomeReason : derived.outcomeReason,
+    })
+    .returning()
+  return row
+}
+
+export async function makeOpportunityProduct(
+  overrides: Partial<OpportunityProduct> & { opportunityId: string },
+): Promise<OpportunityProduct> {
+  const [row] = await testDb
+    .insert(opportunityProducts)
+    .values({
+      id: overrides.id ?? nextId('opr'),
+      product: overrides.product ?? 'card',
+      amount: overrides.amount ?? 50_000_000,
       ...overrides,
     })
     .returning()
@@ -190,7 +248,9 @@ export async function makeTarget(
       id: overrides.id ?? nextId('tgt'),
       scope: overrides.scope ?? 'unit',
       period: overrides.period ?? '2026-Q3',
-      amount: overrides.amount ?? 10_000_000_000,
+      /** 600 basis points — the 6% conversion the branch reports against. */
+      metric: overrides.metric ?? 'cr_rate',
+      amount: overrides.amount ?? 600,
       ...overrides,
     })
     .returning()
@@ -202,7 +262,6 @@ export async function makeAuditEvent(
 ): Promise<AuditEvent> {
   const seq = overrides.seq ?? 1
   const first = seq === 1
-  const direction = overrides.direction ?? 'up'
 
   const [row] = await testDb
     .insert(auditEvents)
@@ -210,16 +269,11 @@ export async function makeAuditEvent(
       ...overrides,
       id: overrides.id ?? nextId('aud'),
       seq,
-      direction,
-      toStatus: overrides.toStatus ?? 'sale_confirmed',
-      /** The first event of a trace has no predecessor and nothing to time,
-       *  and a handover has to name someone while an edit must not. Both are
-       *  schema rules, so the defaults respect them rather than producing
-       *  rows that cannot be written. */
-      fromStatus: first ? null : (overrides.fromStatus ?? 'sale_reviewing'),
+      kind: overrides.kind ?? (first ? 'created' : 'contacted'),
+      /** The first event of a trace has nothing to measure from. That is a
+       *  schema rule, so the default respects it rather than producing rows
+       *  that cannot be written. */
       heldMs: first ? null : (overrides.heldMs ?? 60_000),
-      toUserId:
-        direction === 'in_place' ? null : (overrides.toUserId ?? overrides.actorId),
     })
     .returning()
   return row

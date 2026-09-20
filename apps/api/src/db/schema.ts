@@ -64,6 +64,16 @@ export const users = pgTable(
     id: text('id').primaryKey(),
     /** Login handle: SALE-SSE-01, TL-RB-01, BM-TH-01. */
     code: text('code').notNull().unique(),
+
+    /** Staff number as HR issues it, and the join key for imported leads.
+     *
+     *  Deliberately not the login handle. A bulk upload of leads names the
+     *  salesperson by staff number, which is what the source systems carry and
+     *  what is printed on a payslip; the login handle is ours to rename and
+     *  belongs to this application alone. Fusing them would mean an import
+     *  silently failing to find anyone the day someone's handle changes. */
+    employeeCode: text('employee_code').notNull().unique(),
+
     name: text('name').notNull(),
     email: text('email'),
     phone: text('phone'),
@@ -269,23 +279,27 @@ export const signals = pgTable(
  * Opportunities
  * ────────────────────────────────────────────────────────────────────────── */
 
-/** A deal: one customer, one product, one need. The centre of the system and
- *  the only thing that travels up the chain.
+/** A lead: one customer, one product, one need. The unit of work for everyone
+ *  in the branch, and the row every figure on every report counts.
  *
- *  The unit that gets approved, counted into the pipeline and added to a
- *  target is this, not the customer. One customer can have several open at
- *  once — a mortgage and a credit card are two deals on one file — which is
- *  why the pipeline counts rows here and never counts people.
+ *  One customer can carry several at once — a card and an overdraft are two
+ *  leads on one file — which is why conversion counts rows here and never
+ *  counts people.
  *
- *  Three axes run through this table and must not be collapsed into one:
+ *  Three things run through this table and must not be collapsed into one
+ *  chain, which is exactly the mistake this schema was rebuilt to undo:
  *
- *    stage           how far the customer has come. Their journey.
- *    approvalStatus  how far the paperwork has come inside MSB. One-way.
- *    nextAction      who has to do something next. Runs both ways.
+ *    stage        how far the salesperson has got with the customer:
+ *                 new → contacted → advised. Theirs alone; nobody approves it.
+ *    outcome      open / won / lost. The salesperson decides, and the branch
+ *                 report counts it the moment they do — no signature gates it.
+ *    confirmedAt  a team lead has sat down with the paperwork that lives
+ *                 outside this system and checked the row against it.
  *
- *  A deal can be in `negotiation` with the customer while the paperwork has
- *  only reached `sale_confirmed` at home, and the next action can bounce back
- *  down to the salesperson without the approval status ever going backwards. */
+ *  The third runs beside the other two rather than in front of them. It
+ *  answers "does the database agree with the filing cabinet", which is a
+ *  different question from "did we win", and blocking one on the other was
+ *  what made the old ten-state chain wrong. */
 export const opportunities = pgTable(
   'opportunities',
   {
@@ -297,19 +311,57 @@ export const opportunities = pgTable(
       .notNull()
       .references(() => customers.id),
 
-    /** Copied from the customer rather than joined. Every pipeline, gap and
-     *  forecast query filters on it, and the branch manager's screen compares
+    /** Copied from the customer rather than joined. Every funnel, gap and
+     *  conversion query filters on it, and the branch manager's screen compares
      *  the two segments side by side; paying for a join on the hottest query
      *  in the app to avoid a column that changes almost never is a bad trade.
      *  Whatever moves a customer between segments has to update this too. */
     segment: text('segment').notNull(),
 
+    /** The branch that did this work, fixed at the moment the lead was raised.
+     *
+     *  Not derived from whoever owns it today, and that is the whole point.
+     *  Without this column a branch's figures are "whatever the people who
+     *  currently sit here happen to have done, wherever they did it" — so a
+     *  salesperson transferring in October would silently carry every deal
+     *  they closed in September out of one branch's report and into another's,
+     *  and re-running September would print a different number than it did in
+     *  September. A report about a period has to stay true about that period.
+     *
+     *  It follows that a transfer is a data question, not a button: moving
+     *  somebody sets their new unit, and their finished work stays counted
+     *  where it was done. */
+    unitId: text('unit_id')
+      .notNull()
+      .references(() => units.id),
+
+    /** What is being sold, as a code from the closed set. Free text here would
+     *  have killed the branch report, whose whole shape is one column per
+     *  product — cards, overdrafts and unsecured loans counted separately. */
     product: text('product').notNull(),
     need: text('need').notNull(),
-    /** Deal size in whole đồng. Arithmetic goes through lib/money.ts. */
+    /** Expected size in whole đồng, entered up front. What was actually sold
+     *  lands in `opportunity_products`, which is a different number and often
+     *  more than one of them. Arithmetic goes through lib/money.ts. */
     value: bigint('value', { mode: 'number' }).notNull(),
 
-    stage: text('stage').notNull().default('prospecting'),
+    /** Where the salesperson has got to. Three steps, matching the funnel the
+     *  branch already reports on. */
+    stage: text('stage').notNull().default('new'),
+
+    /** When each step happened.
+     *
+     *  These carry the funnel rather than `stage` alone, because the report
+     *  asks "how many have been contacted" of every row including the closed
+     *  ones, and a won deal's stage has stopped moving. Counting
+     *  `contacted_at is not null` is exact; comparing an ordinal stage means
+     *  deciding whether `won` sorts above `advised`, which is a question the
+     *  funnel should never have to ask.
+     *
+     *  They also hand the model the one thing it needs to be useful about a
+     *  list of three hundred names: how long each has been sitting untouched. */
+    contactedAt: timestamp('contacted_at', { withTimezone: true }),
+    advisedAt: timestamp('advised_at', { withTimezone: true }),
 
     /** What a person has checked and stands behind. */
     confirmedData: jsonb('confirmed_data').notNull().default(sql`'{}'::jsonb`),
@@ -334,11 +386,10 @@ export const opportunities = pgTable(
     /** The specifics in the salesperson's own words. */
     blockerNote: text('blocker_note'),
 
+    /** What this person means to do next, in their own words. Paired with
+     *  `dueDate`, it is the whole of the model's work-management job: a lead
+     *  promised a call back today, and a lead nobody has touched in a week. */
     nextAction: text('next_action'),
-    /** Who owes the next move. Points at the salesperson most of the time,
-     *  but a branch manager's decision hands work back down through it, which
-     *  is what closes the loop instead of ending at a dashboard. */
-    nextActionOwnerId: text('next_action_owner_id').references(() => users.id),
 
     ownerId: text('owner_id')
       .notNull()
@@ -347,30 +398,40 @@ export const opportunities = pgTable(
      *  keeps "overdue" from flipping with the clock. */
     dueDate: date('due_date'),
 
-    /** Conversion chance, 0-100. Defaults follow the stage but a person may
-     *  override it — they have met the customer and the table has not. */
-    winProbability: integer('win_probability').notNull().default(10),
-
-    supportNeeded: text('support_needed'),
-    /** What the branch manager actually granted, e.g. a rate concession. */
-    bmDecision: text('bm_decision'),
-
-    approvalStatus: text('approval_status').notNull().default('sale_reviewing'),
-
     outcome: text('outcome').notNull().default('open'),
     outcomeReason: text('outcome_reason'),
+
+    /** Where the lead came in from. A bulk upload matches a salesperson by
+     *  staff number; a salesperson who found the customer themselves types it
+     *  in. Both end up here, and the branch report counts them together — but
+     *  conversion on bought leads and conversion on self-sourced ones are
+     *  different numbers, and separating them later needs this column now. */
+    source: text('source').notNull().default('manual'),
 
     /** Typed by a person or drafted by the model. This one column is the
      *  before/after axis of the whole trial: the same system, measured twice. */
     createdVia: text('created_via').notNull().default('manual'),
 
-    /** Timing marks, so the trial numbers are measured rather than estimated.
-     *  drafted → confirmed is what a deal costs a salesperson; confirmed →
-     *  lead acted is how long support takes to arrive. */
-    draftedAt: timestamp('drafted_at', { withTimezone: true }),
+    /** The team lead's reconciliation mark.
+     *
+     *  Set when a team lead has compared this row against the paperwork that
+     *  lives outside the system and found it complete. It changes no figure on
+     *  any report — the deal was already counted the moment the salesperson
+     *  closed it — so this is not an approval and must never be read as a gate.
+     *  What it buys is the answer to a question a dashboard cannot answer on
+     *  its own: of the deals we are reporting, how many has a human actually
+     *  checked against the file. */
+    confirmedById: text('confirmed_by_id').references(() => users.id),
     confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
-    leadActedAt: timestamp('lead_acted_at', { withTimezone: true }),
-    bmActedAt: timestamp('bm_acted_at', { withTimezone: true }),
+    /** What the team lead found — a missing document, a figure that differed.
+     *  Recorded rather than acted on: correcting the row is the salesperson's
+     *  job, and overwriting their work silently is how two people stop
+     *  agreeing about what happened. */
+    confirmNote: text('confirm_note'),
+
+    /** When the model drafted this, if it did. Pairs with `createdVia` to
+     *  measure what the model saves a salesperson. */
+    draftedAt: timestamp('drafted_at', { withTimezone: true }),
     closedAt: timestamp('closed_at', { withTimezone: true }),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -378,43 +439,123 @@ export const opportunities = pgTable(
   },
   (t) => [
     index('opportunities_customer').on(t.customerId),
-    /** A salesperson's own list, and a team lead's inbox of confirmed deals. */
-    index('opportunities_owner_status').on(t.ownerId, t.approvalStatus),
-    /** The pipeline, per segment. */
-    index('opportunities_segment_stage').on(t.segment, t.stage),
+    /** A salesperson's own working list, which is the busiest query here. */
+    index('opportunities_owner_stage').on(t.ownerId, t.stage),
+    /** The branch report, which is the one query the whole BM screen is. */
+    index('opportunities_unit_outcome').on(t.unitId, t.outcome),
+    /** The funnel and the conversion rate, per segment. */
+    index('opportunities_segment_outcome').on(t.segment, t.outcome),
     index('opportunities_due').on(t.dueDate),
-    /** "Today's priorities" for whoever is signed in. */
-    index('opportunities_next_action').on(t.nextActionOwnerId, t.dueDate),
-    /** Recurring blockers, the branch manager's view. */
+    /** A team lead's signing queue: closed, not yet reconciled. Partial, so it
+     *  indexes only the handful of rows actually waiting. */
+    index('opportunities_unconfirmed')
+      .on(t.ownerId, t.closedAt)
+      .where(sql`${t.outcome} <> 'open' and ${t.confirmedAt} is null`),
+    /** Recurring blockers, which is what a team lead chases people about. */
     index('opportunities_blocker').on(t.blockerCode),
 
     check('opportunities_segment', sql`${t.segment} in ('sse', 'rb')`),
     check('opportunities_value', sql`${t.value} > 0`),
     check(
-      'opportunities_win_probability',
-      sql`${t.winProbability} between 0 and 100`,
-    ),
-    check(
       'opportunities_stage',
-      sql`${t.stage} in ('prospecting', 'discovery', 'proposal', 'negotiation', 'documentation', 'closing')`,
+      sql`${t.stage} in ('new', 'contacted', 'advised')`,
     ),
     check(
-      'opportunities_approval_status',
-      sql`${t.approvalStatus} in ('ai_drafted', 'sale_reviewing', 'sale_confirmed', 'lead_viewed', 'lead_returned', 'lead_approved', 'escalated_to_bm', 'bm_decided', 'completed', 'closed_lost')`,
+      'opportunities_product',
+      sql`${t.product} in ('card', 'od', 'usl', 'loan', 'casa', 'insurance', 'other')`,
     ),
     check('opportunities_outcome', sql`${t.outcome} in ('open', 'won', 'lost')`),
+    check('opportunities_source', sql`${t.source} in ('import', 'manual')`),
     check('opportunities_created_via', sql`${t.createdVia} in ('manual', 'ai')`),
     check(
       'opportunities_blocker_code',
       sql`${t.blockerCode} is null or ${t.blockerCode} in ('rate', 'speed', 'experience', 'documents', 'collateral', 'policy', 'competitor', 'customer_hesitation', 'other')`,
     ),
 
-    /** A closed deal has to say why. The brief asks for it, and a pipeline
-     *  full of losses with no reason teaches nobody anything. */
+    /** The stage and its two marks are one fact written twice, so they are
+     *  locked together rather than left to agree by convention. A row claiming
+     *  `advised` with no `advised_at` would be counted by the stage column on
+     *  one screen and missed by the funnel query on another, and the two
+     *  numbers would disagree with nobody able to say which was right. */
+    check(
+      'opportunities_stage_marks',
+      sql`(${t.stage} = 'new') = (${t.contactedAt} is null) and (${t.stage} = 'advised') = (${t.advisedAt} is not null)`,
+    ),
+
+    /** Same argument for the close: a deal is closed exactly when it has a
+     *  closing time. */
+    check(
+      'opportunities_closed_mark',
+      sql`(${t.outcome} = 'open') = (${t.closedAt} is null)`,
+    ),
+
+    /** A closed deal has to say why. The brief asks for it, and a list of
+     *  losses with no reasons teaches a team lead nothing. */
     check(
       'opportunities_outcome_reason',
       sql`${t.outcome} = 'open' or ${t.outcomeReason} is not null`,
     ),
+
+    /** Who signed and when travel together or not at all. */
+    check(
+      'opportunities_confirm_pair',
+      sql`(${t.confirmedById} is null) = (${t.confirmedAt} is null)`,
+    ),
+
+    /** Nothing open can be reconciled: there is no paperwork to check against
+     *  until the deal has actually landed one way or the other. */
+    check(
+      'opportunities_confirm_closed',
+      sql`${t.confirmedAt} is null or ${t.outcome} <> 'open'`,
+    ),
+  ],
+)
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Opportunity products
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** What was actually sold on a deal that landed.
+ *
+ *  A child table rather than a column because the branch report needs two
+ *  things a single column cannot give it. One deal can carry more than one
+ *  product — the branch's own figures show 306 products against 284 successful
+ *  deals, so roughly one in thirteen is a cross-sell — and each product is
+ *  measured in its own currency of sorts: an overdraft is reported by the
+ *  limit granted, a loan by the balance drawn. One `amount` per product row
+ *  covers both, where one `value` on the parent covers neither.
+ *
+ *  Only ever written on a won deal. The parent's `value` stays what the
+ *  salesperson expected up front, so the gap between expectation and outcome
+ *  survives instead of being overwritten. */
+export const opportunityProducts = pgTable(
+  'opportunity_products',
+  {
+    id: text('id').primaryKey(),
+    opportunityId: text('opportunity_id')
+      .notNull()
+      .references(() => opportunities.id, { onDelete: 'cascade' }),
+
+    product: text('product').notNull(),
+    /** Whole đồng. What the figure means follows the product: a limit for an
+     *  overdraft, a drawn balance for a loan, the annual fee for a card. */
+    amount: bigint('amount', { mode: 'number' }).notNull(),
+
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /** One row per product per deal. Two rows for the same product would
+     *  double a branch's count of cards sold, which is the headline figure. */
+    uniqueIndex('opportunity_products_key').on(t.opportunityId, t.product),
+    /** The report's own query: count and sum, grouped by product. */
+    index('opportunity_products_product').on(t.product),
+
+    check(
+      'opportunity_products_product',
+      sql`${t.product} in ('card', 'od', 'usl', 'loan', 'casa', 'insurance', 'other')`,
+    ),
+    check('opportunity_products_amount', sql`${t.amount} >= 0`),
   ],
 )
 
@@ -422,27 +563,28 @@ export const opportunities = pgTable(
  * Audit events
  * ────────────────────────────────────────────────────────────────────────── */
 
-/** Every move a deal makes: who, when, what changed, and why.
+/** Everything that has happened to a lead: who, when, what changed, and why.
  *
  *  Append-only, written inside the same transaction as the change it records,
  *  so the log cannot disagree with the row it describes.
  *
- *  This table is also the data behind the approval-process charts, which is
- *  why it carries two columns a plain audit trail would not:
+ *  It carries two columns a plain audit trail would not:
  *
- *    heldMs  how long the deal sat in `fromStatus` before this move. Computed
- *            once at write time. Without it, every timing chart becomes a
- *            window function over the whole log, recomputed on each render,
- *            and "average time from confirmed to supported" stops being a
- *            one-line query.
- *    seq     position within this deal's own history. Two events can land in
+ *    heldMs  how long the lead sat where it was before this event. Computed
+ *            once at write time. This is what a team lead's chasing actually
+ *            runs on — a lead handed out on Monday and first called on Friday
+ *            is four days of `heldMs` on its `contacted` event, and the branch
+ *            average is one SELECT rather than a window function over the
+ *            whole log on every render.
+ *    seq     position within this lead's own history. Two events can land in
  *            the same millisecond; a trace drawn from timestamps alone would
  *            then render them in either order.
  *
- *  Between them the table answers, in one SELECT each: how many deals flowed
- *  from each status to each other status (a Sankey, loop-backs included),
- *  where deals sit longest, how often work is sent back, and the full trace
- *  of any single deal. */
+ *  What it no longer carries is a direction or a recipient. Both existed to
+ *  describe a deal being handed up a chain of approvers, and there is no such
+ *  chain: a lead belongs to one salesperson from the day it arrives. The one
+ *  handover left — an admin assigning an imported lead — is a change of owner
+ *  like any other, and lands in `changes` where every other field change does. */
 export const auditEvents = pgTable(
   'audit_events',
   {
@@ -461,82 +603,48 @@ export const auditEvents = pgTable(
       .notNull()
       .references(() => users.id),
 
-    /** Null only on the first event, when the deal comes into being. */
-    fromStatus: text('from_status'),
-    toStatus: text('to_status').notNull(),
+    /** What happened. A closed set, because every timing question the branch
+     *  asks is a group-by on this column. */
+    kind: text('kind').notNull(),
 
-    /** Which way the deal moved. Up is asking for something — a salesperson
-     *  confirming, a team lead escalating — and is gated. Down is handing work
-     *  out, and is not: taking on responsibility needs no permission.
-     *  `in_place` is an edit that changed no status. */
-    direction: text('direction').notNull(),
-    /** Who the deal was handed to, when it was handed to anyone. Drives the
-     *  team lead's "needs support" list and a salesperson's day. */
-    toUserId: text('to_user_id').references(() => users.id),
-
-    /** Milliseconds spent in `fromStatus`. Null on the first event. */
+    /** Milliseconds since the previous event on this lead. Null on the first,
+     *  which has nothing to measure from. */
     heldMs: bigint('held_ms', { mode: 'number' }),
 
-    /** When the person it was handed to actually looked at it.
-     *
-     *  Notifications are not a table: an unread badge is "handovers addressed
-     *  to me with nothing here yet", which the to_user index already answers.
-     *  A separate notifications table would duplicate every row of this one
-     *  and then need keeping in step with it.
-     *
-     *  It also happens to be a measurement the brief asks for — how long from
-     *  a salesperson asking for help to a team lead noticing — which a plain
-     *  read flag would have thrown away. Hence a timestamp, not a boolean. */
-    readAt: timestamp('read_at', { withTimezone: true }),
-
-    /** Field-level before/after, e.g. { "value": [2000000000, 2500000000] }. */
+    /** Field-level before/after, e.g. { "value": [2000000000, 2500000000] }.
+     *  A reassignment is `{ "ownerId": ["u_ha", "u_hai"] }` and needs no
+     *  special column of its own. */
     changes: jsonb('changes').notNull().default(sql`'{}'::jsonb`),
-    /** Why. Required when sending a deal back — the brief asks for it, and a
-     *  rejection with no reason just costs the salesperson another round. */
+    /** Why, in the actor's own words. Required on a loss and on a team lead's
+     *  reconciliation note — a lost deal with no reason teaches nobody
+     *  anything, which is the whole point of a team lead reading these. */
     reason: text('reason'),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    /** One deal's trace, in order. Also enforces that no two events claim the
+    /** One lead's trace, in order. Also enforces that no two events claim the
      *  same position. */
     uniqueIndex('audit_events_trace').on(t.opportunityId, t.seq),
-    /** Transition counts and per-step timings, for the flow charts. */
-    index('audit_events_transition').on(t.fromStatus, t.toStatus),
-    /** Anything waiting on a given person, newest first. */
-    index('audit_events_to_user').on(t.toUserId, t.createdAt),
-    /** The unread badge. Partial, so it stays small however long the log
-     *  grows — it only ever indexes what nobody has looked at yet. */
-    index('audit_events_unread')
-      .on(t.toUserId, t.createdAt)
-      .where(sql`${t.readAt} is null`),
-    index('audit_events_created').on(t.createdAt),
+    /** Per-step timings across the branch: how long from handed out to first
+     *  call, from first call to advice, from advice to close. */
+    index('audit_events_kind_created').on(t.kind, t.createdAt),
+    /** What one person has been doing, which is a team lead's other question. */
+    index('audit_events_actor').on(t.actorId, t.createdAt),
 
     check('audit_events_seq', sql`${t.seq} >= 1`),
-    check('audit_events_direction', sql`${t.direction} in ('up', 'down', 'in_place')`),
+    check(
+      'audit_events_kind',
+      sql`${t.kind} in ('created', 'assigned', 'contacted', 'advised', 'won', 'lost', 'reopened', 'confirmed', 'edited')`,
+    ),
     check('audit_events_held_ms', sql`${t.heldMs} is null or ${t.heldMs} >= 0`),
 
-    /** The first event is the only one allowed to have no predecessor, and it
-     *  is also the only one with nothing to time. Keeping these two facts
-     *  locked together stops a gap appearing in the middle of a trace, which
+    /** The first event is the only one with nothing to measure from. Locking
+     *  the two together stops a gap appearing in the middle of a trace, which
      *  would quietly bend every duration drawn from it. */
     check(
       'audit_events_first_event',
-      sql`(${t.fromStatus} is null) = (${t.seq} = 1) and (${t.heldMs} is null) = (${t.seq} = 1)`,
-    ),
-
-    /** A handover has to name someone; an in-place edit must not. */
-    check(
-      'audit_events_to_user_by_direction',
-      sql`case when ${t.direction} = 'in_place' then ${t.toUserId} is null else ${t.toUserId} is not null end`,
-    ),
-
-    /** Only something addressed to a person can be read by one. Without this,
-     *  an in-place edit could carry a read mark and quietly inflate the
-     *  "time to notice" figures it has nothing to do with. */
-    check(
-      'audit_events_read_by_direction',
-      sql`${t.readAt} is null or ${t.toUserId} is not null`,
+      sql`(${t.heldMs} is null) = (${t.seq} = 1)`,
     ),
   ],
 )
@@ -579,7 +687,20 @@ export const targets = pgTable(
      *  "quý ba", nobody says "1 July to 30 September", and a label groups and
      *  sorts correctly as it is. */
     period: text('period').notNull(),
-    /** The number, in whole đồng. */
+
+    /** What is being measured, which decides what `amount` means.
+     *
+     *  The branch runs on `cr_rate` — the number on every report is "6% CR",
+     *  and the gap column is leads × 6% minus deals won. Money targets exist
+     *  alongside it rather than instead of it, because a conversion rate says
+     *  nothing about whether the deals were worth having. */
+    metric: text('metric').notNull().default('cr_rate'),
+    /** The number, in the unit its metric implies: basis points for
+     *  `cr_rate` (600 = 6%), a count for `deals`, whole đồng for `value`.
+     *
+     *  Basis points rather than a decimal so the column stays an integer and
+     *  the gap arithmetic stays exact — a rate stored as a float turns "did we
+     *  hit 6%" into a question about rounding. */
     amount: bigint('amount', { mode: 'number' }).notNull(),
 
     note: text('note'),
@@ -591,7 +712,14 @@ export const targets = pgTable(
     index('targets_owner_period').on(t.ownerId, t.period),
 
     check('targets_scope', sql`${t.scope} in ('user', 'unit')`),
+    check('targets_metric', sql`${t.metric} in ('cr_rate', 'deals', 'value')`),
     check('targets_amount', sql`${t.amount} > 0`),
+    /** A conversion rate above 100% is a typo, and one that reaches a report
+     *  makes every gap on it negative. */
+    check(
+      'targets_cr_rate_range',
+      sql`${t.metric} <> 'cr_rate' or ${t.amount} <= 10000`,
+    ),
     check('targets_segment', sql`${t.segment} is null or ${t.segment} in ('sse', 'rb')`),
 
     /** A personal target names a person; a unit target must not, or it would
@@ -601,10 +729,10 @@ export const targets = pgTable(
       sql`case when ${t.scope} = 'user' then ${t.ownerId} is not null else ${t.ownerId} is null end`,
     ),
 
-    /** One number per person per period, and one per unit-and-segment per
-     *  period. Two rows for the same thing means the gap depends on which one
-     *  a query happens to read first, and the figure quietly stops matching
-     *  itself between two screens.
+    /** One number per person per metric per period, and one per
+     *  unit-and-segment per metric per period. Two rows for the same thing
+     *  means the gap depends on which one a query happens to read first, and
+     *  the figure quietly stops matching itself between two screens.
      *
      *  `coalesce` rather than a plain unique index because Postgres treats
      *  NULLs as distinct, so unit rows — which have a null owner — would slip
@@ -614,6 +742,7 @@ export const targets = pgTable(
       sql`coalesce(${t.ownerId}, '')`,
       t.unitId,
       sql`coalesce(${t.segment}, '')`,
+      t.metric,
       t.period,
     ),
   ],
@@ -674,95 +803,90 @@ export const SIGNAL_SOURCES = ['sale', 'system', 'ai'] as const
 export type SignalSource = (typeof SIGNAL_SOURCES)[number]
 
 export type Opportunity = typeof opportunities.$inferSelect
+export type OpportunityProduct = typeof opportunityProducts.$inferSelect
 
-/** How far the customer has come. Their journey, not the paperwork's. */
-export const STAGES = [
-  'prospecting',
-  'discovery',
-  'proposal',
-  'negotiation',
-  'documentation',
-  'closing',
-] as const
+/** The funnel, in order. Three steps, matching what the branch already counts:
+ *  a lead exists, someone has called it, someone has advised on a product.
+ *
+ *  Winning or losing is not a fourth step — it is the `outcome` column, and it
+ *  can land from `contacted` without passing through `advised`. Keeping the
+ *  two apart is what lets the report say "42% advised, 1.8% converted" about
+ *  the same population without the numbers arguing with each other. */
+export const STAGES = ['new', 'contacted', 'advised'] as const
 export type Stage = (typeof STAGES)[number]
 
-/** Default conversion chance per stage, and the only input to the forecast
- *  besides deal size. A person may override it on any single deal.
- *
- *  These numbers decide every figure on the branch manager's screen, so they
- *  are a business decision, not a technical one — they need signing off by
- *  someone who actually runs a branch before the trial. */
-export const STAGE_WIN_PROBABILITY: Record<Stage, number> = {
-  prospecting: 10,
-  discovery: 25,
-  proposal: 50,
-  negotiation: 70,
-  documentation: 85,
-  closing: 100,
+/** Position in the funnel, for "has this lead got at least as far as X".
+ *  Never persisted — the timestamps are the record. */
+export const STAGE_ORDER: Record<Stage, number> = {
+  new: 0,
+  contacted: 1,
+  advised: 2,
 }
-
-/** The ten approval states from the brief, in order.
- *
- *  Internal vocabulary only: nobody ever picks one from a dropdown. A person
- *  presses "Confirm" or "Send back" and the status is the consequence. Two of
- *  these are the gates that decide what the tier above can see at all. */
-export const APPROVAL_STATUSES = [
-  'ai_drafted',
-  'sale_reviewing',
-  'sale_confirmed',
-  'lead_viewed',
-  'lead_returned',
-  'lead_approved',
-  'escalated_to_bm',
-  'bm_decided',
-  'completed',
-  'closed_lost',
-] as const
-export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number]
-
-/** A team lead sees nothing before this point — drafts stay private to the
- *  salesperson who wrote them. */
-export const VISIBLE_TO_LEAD: readonly ApprovalStatus[] = [
-  'sale_confirmed',
-  'lead_viewed',
-  'lead_returned',
-  'lead_approved',
-  'escalated_to_bm',
-  'bm_decided',
-  'completed',
-  'closed_lost',
-]
-
-/** A branch manager opens a deal only once it has been escalated. They still
- *  see every VISIBLE_TO_LEAD row in the totals — the pipeline would be short
- *  otherwise — but the list they can act on is this one. */
-export const VISIBLE_TO_BM: readonly ApprovalStatus[] = [
-  'escalated_to_bm',
-  'bm_decided',
-  'completed',
-  'closed_lost',
-]
 
 export const OUTCOMES = ['open', 'won', 'lost'] as const
 export type Outcome = (typeof OUTCOMES)[number]
 
+/** What MSB sells, as the branch report groups it: cards, overdrafts,
+ *  unsecured loans, secured lending, current accounts and insurance.
+ *
+ *  Closed rather than free text because the report is literally one column per
+ *  product. `other` is the escape hatch, and a build-up of `other` rows is the
+ *  signal that this list needs another entry — not that the list was a
+ *  mistake. */
+export const PRODUCTS = [
+  'card',
+  'od',
+  'usl',
+  'loan',
+  'casa',
+  'insurance',
+  'other',
+] as const
+export type Product = (typeof PRODUCTS)[number]
+
+/** How a lead reached the system: pushed in from a campaign file, or found by
+ *  the salesperson themselves. */
+export const LEAD_SOURCES = ['import', 'manual'] as const
+export type LeadSource = (typeof LEAD_SOURCES)[number]
+
 export const CREATED_VIA = ['manual', 'ai'] as const
 export type CreatedVia = (typeof CREATED_VIA)[number]
 
-/** Why a deal is stuck. A closed set so identical blockers group together
- *  across the branch — the first three come straight from the brief's two
- *  customer scenarios. */
 export type AuditEvent = typeof auditEvents.$inferSelect
+
+/** Everything that can happen to a lead. `reopened` exists because a customer
+ *  who said no in March can say yes in June, and forcing that through a new
+ *  row would count them twice in the funnel. */
+export const AUDIT_KINDS = [
+  'created',
+  'assigned',
+  'contacted',
+  'advised',
+  'won',
+  'lost',
+  'reopened',
+  'confirmed',
+  'edited',
+] as const
+export type AuditKind = (typeof AUDIT_KINDS)[number]
+
 export type Target = typeof targets.$inferSelect
 
 export const TARGET_SCOPES = ['user', 'unit'] as const
 export type TargetScope = (typeof TARGET_SCOPES)[number]
 
-/** Which way a deal moved. Asking upward is gated by the two visibility
- *  gates; handing work downward is not. */
-export const DIRECTIONS = ['up', 'down', 'in_place'] as const
-export type Direction = (typeof DIRECTIONS)[number]
+/** What a target measures, which decides what its `amount` means: basis
+ *  points, a count of deals, or whole đồng. */
+export const TARGET_METRICS = ['cr_rate', 'deals', 'value'] as const
+export type TargetMetric = (typeof TARGET_METRICS)[number]
 
+/** Rates are stored as basis points so the gap arithmetic stays in integers.
+ *  One place to divide, so nobody has to remember the factor. */
+export const BPS_PER_UNIT = 10_000
+
+/** Why a deal is stuck. A closed set so identical blockers group together
+ *  across the branch — it is how a team lead sees that eleven people are
+ *  losing to the same competitor rather than eleven separate problems. */
 export const BLOCKER_CODES = [
   'rate',
   'speed',

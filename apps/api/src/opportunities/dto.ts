@@ -11,13 +11,32 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator'
-import { APPROVAL_STATUSES, BLOCKER_CODES, SEGMENTS, STAGES } from '../db/schema'
+import {
+  BLOCKER_CODES,
+  LEAD_SOURCES,
+  OUTCOMES,
+  PRODUCTS,
+  SEGMENTS,
+  STAGES,
+} from '../db/schema'
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value
 
+/** Query strings arrive as text; a checkbox filter has to survive the trip. */
+const flag = ({ value }: { value: unknown }) => value === 'true' || value === true
+
 export class ListOpportunitiesDto {
+  /** Free text over the lead and the customer it hangs off. People look for a
+   *  lead by the customer's name far more often than by its code. */
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(100)
+  q?: string
+
   @IsOptional()
   @IsIn(SEGMENTS)
   segment?: string
@@ -27,8 +46,20 @@ export class ListOpportunitiesDto {
   stage?: string
 
   @IsOptional()
-  @IsIn(APPROVAL_STATUSES)
-  approvalStatus?: string
+  @IsIn(OUTCOMES)
+  outcome?: string
+
+  @IsOptional()
+  @IsIn(PRODUCTS)
+  product?: string
+
+  @IsOptional()
+  @IsIn(LEAD_SOURCES)
+  source?: string
+
+  @IsOptional()
+  @IsIn(BLOCKER_CODES)
+  blockerCode?: string
 
   @IsOptional()
   @IsString()
@@ -38,10 +69,44 @@ export class ListOpportunitiesDto {
   @IsString()
   customerId?: string
 
-  /** Only what is waiting on the caller, for "today's priorities". */
+  /** Only the caller's own book. */
   @IsOptional()
-  @Transform(({ value }) => value === 'true' || value === true)
+  @Transform(flag)
   mine?: boolean
+
+  /** Nobody has called these yet — what a team lead chases. */
+  @IsOptional()
+  @Transform(flag)
+  untouched?: boolean
+
+  /** Landed, nobody has checked it against the paperwork. */
+  @IsOptional()
+  @Transform(flag)
+  awaitingConfirm?: boolean
+
+  @IsOptional()
+  @Transform(flag)
+  confirmed?: boolean
+
+  /** Past its date and still open. A lead closed late is not overdue, it is
+   *  finished. */
+  @IsOptional()
+  @Transform(flag)
+  overdue?: boolean
+
+  /** Nothing has happened to it for this many days. What a team lead chases. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(3650)
+  staleDays?: number
+
+  /** What the list is ordered by, which decides what the person looking at it
+   *  does first. `due` runs a salesperson's day; `stale` runs the chasing. */
+  @IsOptional()
+  @IsIn(['due', 'stale', 'value', 'recent'], { message: 'sort_invalid' })
+  sort?: string
 
   @IsOptional()
   @Type(() => Number)
@@ -62,10 +127,7 @@ export class CreateOpportunityDto {
   @IsNotEmpty({ message: 'customer_required' })
   customerId!: string
 
-  @Transform(trim)
-  @IsString()
-  @IsNotEmpty({ message: 'product_required' })
-  @MaxLength(200)
+  @IsIn(PRODUCTS, { message: 'product_required' })
   product!: string
 
   @Transform(trim)
@@ -79,16 +141,11 @@ export class CreateOpportunityDto {
   @Min(1, { message: 'value_must_be_positive' })
   value!: number
 
+  /** Where it came in from. A bulk upload says `import`; a salesperson who
+   *  found the customer themselves leaves it alone. */
   @IsOptional()
-  @IsIn(STAGES)
-  stage?: string
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  @Max(100)
-  winProbability?: number
+  @IsIn(LEAD_SOURCES)
+  source?: string
 
   /** YYYY-MM-DD. A deadline is a day, not an instant. */
   @IsOptional()
@@ -112,12 +169,6 @@ export class CreateOpportunityDto {
   nextAction?: string
 
   @IsOptional()
-  @Transform(trim)
-  @IsString()
-  @MaxLength(1000)
-  supportNeeded?: string
-
-  @IsOptional()
   @IsObject()
   confirmedData?: Record<string, unknown>
 
@@ -127,15 +178,13 @@ export class CreateOpportunityDto {
   missingInfo?: string[]
 }
 
-/** Editing never changes the customer or the approval status: the first would
- *  move a deal into another pipeline mid-approval, and the second is only ever
- *  a consequence of pressing a button. */
+/** Editing never changes the customer, the owner or the funnel: the first
+ *  would move a lead into another segment's numbers, the second is a handover
+ *  and has its own endpoint, and the third is only ever a consequence of
+ *  pressing a button. */
 export class UpdateOpportunityDto {
   @IsOptional()
-  @Transform(trim)
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(200)
+  @IsIn(PRODUCTS)
   product?: string
 
   @IsOptional()
@@ -150,17 +199,6 @@ export class UpdateOpportunityDto {
   @IsInt()
   @Min(1, { message: 'value_must_be_positive' })
   value?: number
-
-  @IsOptional()
-  @IsIn(STAGES)
-  stage?: string
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  @Max(100)
-  winProbability?: number
 
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'due_date_invalid' })
@@ -183,12 +221,6 @@ export class UpdateOpportunityDto {
   nextAction?: string
 
   @IsOptional()
-  @Transform(trim)
-  @IsString()
-  @MaxLength(1000)
-  supportNeeded?: string
-
-  @IsOptional()
   @IsObject()
   confirmedData?: Record<string, unknown>
 
@@ -206,15 +238,45 @@ export class UpdateOpportunityDto {
   reason?: string
 }
 
+/** One product a deal actually sold, with what it was worth.
+ *
+ *  `amount` may be zero — a fee-free card is a real sale the branch counts —
+ *  but never absent, because the report sums this column and a missing figure
+ *  would silently read as nothing. */
+export class SoldProductDto {
+  @IsIn(PRODUCTS)
+  product!: string
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0, { message: 'amount_must_not_be_negative' })
+  amount!: number
+
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(500)
+  note?: string
+}
+
 /** The body behind a button. Which fields matter depends on the button, and
- *  the service says so rather than the shape: `send_back` needs a reason and
- *  usually `missingInfo`, `decide` carries what the branch manager granted. */
+ *  the service says so rather than the shape: `win` needs a reason and what
+ *  was sold, `confirm` carries the team lead's note from the file. */
 export class ActDto {
+  /** Why. Compulsory on the moves that change what the branch reports — the
+   *  service decides which, so this stays optional here. */
   @IsOptional()
   @Transform(trim)
   @IsString()
   @MaxLength(1000)
   reason?: string
+
+  /** What was sold. Required on `win` and ignored everywhere else. */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SoldProductDto)
+  products?: SoldProductDto[]
 
   @IsOptional()
   @IsArray()
@@ -231,17 +293,21 @@ export class ActDto {
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'due_date_invalid' })
   dueDate?: string
 
-  /** What the branch manager granted, e.g. a rate concession. */
+  @IsOptional()
+  @IsIn(BLOCKER_CODES)
+  blockerCode?: string
+
   @IsOptional()
   @Transform(trim)
   @IsString()
   @MaxLength(1000)
-  bmDecision?: string
+  blockerNote?: string
+}
 
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  @Max(100)
-  winProbability?: number
+/** Handing a lead to someone else. Admin only, and the service checks the
+ *  recipient is in the sales line and in the same segment. */
+export class AssignOpportunityDto {
+  @IsString()
+  @IsNotEmpty({ message: 'owner_required' })
+  ownerId!: string
 }

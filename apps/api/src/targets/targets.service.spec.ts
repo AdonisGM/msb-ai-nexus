@@ -18,7 +18,7 @@ describe('setting a number', () => {
     const target = await service.set(branch.bm, {
       scope: 'unit',
       period: Q3,
-      amount: 10_000_000_000,
+      metric: 'value', amount: 10_000_000_000,
     })
 
     expect(target.scope).toBe('unit')
@@ -34,7 +34,7 @@ describe('setting a number', () => {
       scope: 'user',
       ownerId: branch.saleRb.id,
       period: Q3,
-      amount: 2_000_000_000,
+      metric: 'value', amount: 2_000_000_000,
     })
 
     expect(target.ownerId).toBe(branch.saleRb.id)
@@ -49,7 +49,7 @@ describe('setting a number', () => {
         scope: 'unit',
         segment,
         period: Q3,
-        amount: 5_000_000_000,
+        metric: 'value', amount: 5_000_000_000,
       })
     }
 
@@ -62,11 +62,11 @@ describe('setting a number', () => {
   it('replaces the number rather than adding a second one', async () => {
     const branch = await makeBranch()
 
-    await service.set(branch.bm, { scope: 'unit', period: Q3, amount: 10_000_000_000 })
+    await service.set(branch.bm, { scope: 'unit', period: Q3, metric: 'value', amount: 10_000_000_000 })
     const revised = await service.set(branch.bm, {
       scope: 'unit',
       period: Q3,
-      amount: 12_000_000_000,
+      metric: 'value', amount: 12_000_000_000,
       note: 'Revised after the review',
     })
 
@@ -78,8 +78,8 @@ describe('setting a number', () => {
   it('keeps separate quarters apart', async () => {
     const branch = await makeBranch()
 
-    await service.set(branch.bm, { scope: 'unit', period: Q3, amount: 10_000_000_000 })
-    await service.set(branch.bm, { scope: 'unit', period: '2026-Q4', amount: 11_000_000_000 })
+    await service.set(branch.bm, { scope: 'unit', period: Q3, metric: 'value', amount: 10_000_000_000 })
+    await service.set(branch.bm, { scope: 'unit', period: '2026-Q4', metric: 'value', amount: 11_000_000_000 })
 
     expect(await service.list(branch.bm)).toHaveLength(2)
   })
@@ -89,18 +89,18 @@ describe('setting a number', () => {
   it('lets a unit number differ from the sum of its people', async () => {
     const branch = await makeBranch()
 
-    await service.set(branch.bm, { scope: 'unit', period: Q3, amount: 10_000_000_000 })
+    await service.set(branch.bm, { scope: 'unit', period: Q3, metric: 'value', amount: 10_000_000_000 })
     await service.set(branch.bm, {
       scope: 'user',
       ownerId: branch.saleRb.id,
       period: Q3,
-      amount: 2_000_000_000,
+      metric: 'value', amount: 2_000_000_000,
     })
     await service.set(branch.bm, {
       scope: 'user',
       ownerId: branch.saleSse.id,
       period: Q3,
-      amount: 3_000_000_000,
+      metric: 'value', amount: 3_000_000_000,
     })
 
     const rows = await service.list(branch.bm, { period: Q3 })
@@ -116,7 +116,7 @@ describe('who may set one', () => {
   it('is the branch manager', async () => {
     const branch = await makeBranch()
     await expect(
-      service.set(branch.bm, { scope: 'unit', period: Q3, amount: 1_000_000_000 }),
+      service.set(branch.bm, { scope: 'unit', period: Q3, metric: 'value', amount: 1_000_000_000 }),
     ).resolves.toBeDefined()
   })
 
@@ -130,7 +130,7 @@ describe('who may set one', () => {
         scope: 'user',
         ownerId: branch.saleRb.id,
         period: Q3,
-        amount: 1_000_000_000,
+        metric: 'value', amount: 1_000_000_000,
       }),
     ).rejects.toBeInstanceOf(ForbiddenException)
   })
@@ -153,7 +153,7 @@ describe('who may set one', () => {
     const admin = await makeUser({ role: 'admin', unitId: branch.unit.id })
 
     await expect(
-      service.set(admin, { scope: 'unit', period: Q3, amount: 1_000_000_000 }),
+      service.set(admin, { scope: 'unit', period: Q3, metric: 'value', amount: 1_000_000_000 }),
     ).resolves.toBeDefined()
   })
 })
@@ -237,18 +237,18 @@ describe('what it refuses', () => {
 describe('who may see what', () => {
   async function allocated() {
     const branch = await makeBranch()
-    await service.set(branch.bm, { scope: 'unit', period: Q3, amount: 10_000_000_000 })
+    await service.set(branch.bm, { scope: 'unit', period: Q3, metric: 'value', amount: 10_000_000_000 })
     await service.set(branch.bm, {
       scope: 'user',
       ownerId: branch.saleRb.id,
       period: Q3,
-      amount: 2_000_000_000,
+      metric: 'value', amount: 2_000_000_000,
     })
     await service.set(branch.bm, {
       scope: 'user',
       ownerId: branch.saleSse.id,
       period: Q3,
-      amount: 3_000_000_000,
+      metric: 'value', amount: 3_000_000_000,
     })
     return branch
   }
@@ -288,7 +288,7 @@ describe('who may see what', () => {
   it('stops at the branch boundary', async () => {
     const here = await allocated()
     const elsewhere = await makeBranch()
-    await service.set(elsewhere.bm, { scope: 'unit', period: Q3, amount: 99_000_000_000 })
+    await service.set(elsewhere.bm, { scope: 'unit', period: Q3, metric: 'value', amount: 99_000_000_000 })
 
     const rows = await service.list(here.bm, { period: Q3 })
     expect(rows.every((row) => row.unitId === here.unit.id)).toBe(true)
@@ -297,7 +297,7 @@ describe('who may see what', () => {
   it('gives an admin everything', async () => {
     const here = await allocated()
     const elsewhere = await makeBranch()
-    await service.set(elsewhere.bm, { scope: 'unit', period: Q3, amount: 99_000_000_000 })
+    await service.set(elsewhere.bm, { scope: 'unit', period: Q3, metric: 'value', amount: 99_000_000_000 })
     const admin = await makeUser({ role: 'admin', unitId: here.unit.id })
 
     expect(await service.list(admin, { period: Q3 })).toHaveLength(4)
@@ -305,7 +305,7 @@ describe('who may see what', () => {
 
   it('filters by period and by scope', async () => {
     const branch = await allocated()
-    await service.set(branch.bm, { scope: 'unit', period: '2026-Q4', amount: 1_000_000_000 })
+    await service.set(branch.bm, { scope: 'unit', period: '2026-Q4', metric: 'value', amount: 1_000_000_000 })
 
     expect(await service.list(branch.bm, { period: Q3 })).toHaveLength(3)
     expect(await service.list(branch.bm, { scope: 'unit' })).toHaveLength(2)
@@ -318,7 +318,7 @@ describe('removing one', () => {
     const target = await service.set(branch.bm, {
       scope: 'unit',
       period: Q3,
-      amount: 1_000_000_000,
+      metric: 'value', amount: 1_000_000_000,
     })
 
     await service.remove(branch.bm, target.id)
@@ -330,7 +330,7 @@ describe('removing one', () => {
     const target = await service.set(branch.bm, {
       scope: 'unit',
       period: Q3,
-      amount: 1_000_000_000,
+      metric: 'value', amount: 1_000_000_000,
     })
 
     await expect(service.remove(branch.leadRb, target.id)).rejects.toBeInstanceOf(
@@ -344,9 +344,115 @@ describe('removing one', () => {
     const theirs = await service.set(elsewhere.bm, {
       scope: 'unit',
       period: Q3,
-      amount: 1_000_000_000,
+      metric: 'value', amount: 1_000_000_000,
     })
 
     await expect(service.remove(here.bm, theirs.id)).rejects.toBeInstanceOf(NotFoundException)
+  })
+})
+
+describe('what a target measures', () => {
+  /** The branch runs on a conversion rate — every report says "6% CR" — so a
+   *  target with nothing said about it is one of those. */
+  it('is a conversion rate unless told otherwise', async () => {
+    const branch = await makeBranch()
+    const set = await service.set(branch.bm, {
+      scope: 'unit',
+      period: '2026-Q3',
+      amount: 600,
+    })
+
+    expect(set.metric).toBe('cr_rate')
+    expect(set.amount).toBe(600)
+  })
+
+  /** A rate says nothing about whether the deals were worth having, so the
+   *  three live side by side rather than replacing one another. */
+  it('keeps a rate, a deal count and a money number apart', async () => {
+    const branch = await makeBranch()
+
+    await service.set(branch.bm, { scope: 'unit', period: '2026-Q3', amount: 600 })
+    await service.set(branch.bm, {
+      scope: 'unit',
+      period: '2026-Q3',
+      metric: 'deals',
+      amount: 284,
+    })
+    await service.set(branch.bm, {
+      scope: 'unit',
+      period: '2026-Q3',
+      metric: 'value',
+      amount: 10_000_000_000,
+    })
+
+    const all = await service.list(branch.bm, { period: '2026-Q3' })
+    expect(all).toHaveLength(3)
+    expect(all.map((row) => row.metric).sort()).toEqual(['cr_rate', 'deals', 'value'])
+  })
+
+  it('replaces only the number for the same metric', async () => {
+    const branch = await makeBranch()
+    await service.set(branch.bm, { scope: 'unit', period: '2026-Q3', amount: 600 })
+    await service.set(branch.bm, {
+      scope: 'unit',
+      period: '2026-Q3',
+      metric: 'deals',
+      amount: 284,
+    })
+
+    await service.set(branch.bm, { scope: 'unit', period: '2026-Q3', amount: 700 })
+
+    const all = await service.list(branch.bm, { period: '2026-Q3' })
+    expect(all).toHaveLength(2)
+    expect(all.find((row) => row.metric === 'cr_rate')?.amount).toBe(700)
+    expect(all.find((row) => row.metric === 'deals')?.amount).toBe(284)
+  })
+
+  /** A typo that reaches a report makes every gap on it negative. The
+   *  database refuses it too; saying so here gets the caller a sentence
+   *  rather than a constraint name. */
+  it('refuses a conversion target above a hundred percent', async () => {
+    const branch = await makeBranch()
+
+    await expect(
+      service.set(branch.bm, { scope: 'unit', period: '2026-Q3', amount: 10_001 }),
+    ).rejects.toThrow(BadRequestException)
+
+    /** Exactly a hundred percent is absurd but not a typo. */
+    const perfect = await service.set(branch.bm, {
+      scope: 'unit',
+      period: '2026-Q3',
+      amount: 10_000,
+    })
+    expect(perfect.amount).toBe(10_000)
+  })
+
+  /** The bound belongs to the rate, not to the column: a money target of ten
+   *  billion đồng is an ordinary number. */
+  it('lets a money target past the rate’s ceiling', async () => {
+    const branch = await makeBranch()
+    const money = await service.set(branch.bm, {
+      scope: 'unit',
+      period: '2026-Q3',
+      metric: 'value',
+      amount: 10_000_000_000,
+    })
+
+    expect(money.amount).toBe(10_000_000_000)
+  })
+
+  it('filters a list down to one metric', async () => {
+    const branch = await makeBranch()
+    await service.set(branch.bm, { scope: 'unit', period: '2026-Q3', amount: 600 })
+    await service.set(branch.bm, {
+      scope: 'unit',
+      period: '2026-Q3',
+      metric: 'value',
+      amount: 10_000_000_000,
+    })
+
+    const rates = await service.list(branch.bm, { metric: 'cr_rate' })
+    expect(rates).toHaveLength(1)
+    expect(rates[0].amount).toBe(600)
   })
 })

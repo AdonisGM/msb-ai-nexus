@@ -1,14 +1,6 @@
 import { and, eq, inArray, or, type SQL } from 'drizzle-orm'
 import type { Db } from '../db/db.module'
-import {
-  SALES_ROLES,
-  VISIBLE_TO_BM,
-  VISIBLE_TO_LEAD,
-  customers,
-  opportunities,
-  users,
-  type User,
-} from '../db/schema'
+import { SALES_ROLES, customers, opportunities, users, type User } from '../db/schema'
 
 /** Row-level scoping: which records a person is allowed to see at all.
  *
@@ -74,44 +66,19 @@ export function customerScope(db: Db, user: User): SQL | undefined {
   )
 }
 
-/** What a branch manager is asking for.
+/** Leads this person may see.
  *
- *  `reporting` feeds the totals — pipeline, forecast, gap — and covers every
- *  deal a team lead can see. `actionable` feeds the list they can open and
- *  decide on, which is only what has been escalated to them.
- *
- *  The two differ for exactly one role, and conflating them breaks the screen
- *  in one of two ways: either the pipeline comes up short because it only
- *  counted escalations, or the branch manager ends up able to reach into every
- *  deal in the branch, which is not the job. */
-export type OpportunityView = 'reporting' | 'actionable'
-
-/** Opportunities this person may see.
- *
- *  Ownership is not enough here — the approval status gates matter just as
- *  much. A salesperson's drafts stay private until they confirm them, which is
- *  the mechanism behind "a manager sees what you agreed to, not every keystroke".
- */
-export function opportunityScope(
-  db: Db,
-  user: User,
-  view: OpportunityView = 'actionable',
-): SQL | undefined {
+ *  Ownership is the whole rule. There used to be a second gate here, hiding a
+ *  salesperson's work from their team lead until it had been submitted — which
+ *  made sense for a chain of approvals and makes none for this. A team lead's
+ *  job is to notice the lead nobody has called yet; a scope that hid untouched
+ *  leads from them would hide precisely the rows they exist to chase. */
+export function opportunityScope(db: Db, user: User): SQL | undefined {
   const filter = ownerFilter(user)
-
-  /** Admin: no owner restriction and no status gate. */
   if (!filter) return undefined
 
-  const byOwner = inArray(
+  return inArray(
     opportunities.ownerId,
     db.select({ id: users.id }).from(users).where(filter),
   )
-
-  /** A salesperson sees their own work at every stage, drafts included. */
-  if (user.role === 'sale') return byOwner
-
-  const statuses =
-    user.role === 'bm' && view === 'actionable' ? VISIBLE_TO_BM : VISIBLE_TO_LEAD
-
-  return and(byOwner, inArray(opportunities.approvalStatus, [...statuses]))
 }

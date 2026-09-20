@@ -7,6 +7,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -33,6 +34,42 @@ export class ListCustomersDto {
   @IsOptional()
   @IsString()
   ownerId?: string
+
+  /** One value from `GET /customers/facets`. Free text, typed by hand, so it
+   *  is matched exactly rather than validated against a list that does not
+   *  exist. */
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(100)
+  relationStage?: string
+
+  /** An MSB product the customer already holds. Also from `facets`. */
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(100)
+  product?: string
+
+  /** Customers with at least one lead standing this way. "At least one" — a
+   *  customer is not won or lost, their leads are. */
+  @IsOptional()
+  @IsIn(['untouched', 'open', 'won', 'lost'], { message: 'has_lead_invalid' })
+  hasLead?: string
+
+  /** Which date the window below applies to. */
+  @IsOptional()
+  @IsIn(['lastSignalAt', 'createdAt', 'updatedAt'], { message: 'date_field_invalid' })
+  dateField?: string
+
+  /** YYYY-MM-DD, inclusive both ends. */
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'from_invalid' })
+  from?: string
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'to_invalid' })
+  to?: string
 
   @IsOptional()
   @Type(() => Number)

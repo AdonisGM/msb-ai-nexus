@@ -1,3 +1,0 @@
-ALTER TABLE "audit_events" ADD COLUMN "read_at" timestamp with time zone;--> statement-breakpoint
-CREATE INDEX "audit_events_unread" ON "audit_events" USING btree ("to_user_id","created_at") WHERE "audit_events"."read_at" is null;--> statement-breakpoint
-ALTER TABLE "audit_events" ADD CONSTRAINT "audit_events_read_by_direction" CHECK ("audit_events"."read_at" is null or "audit_events"."to_user_id" is not null);

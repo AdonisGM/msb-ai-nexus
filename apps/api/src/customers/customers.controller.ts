@@ -19,6 +19,13 @@ export class CustomersController {
     return this.customers.list(req.user!, query)
   }
 
+  /** The values behind the two free-text pickers on the list screen. Declared
+   *  before `:id` or the router would read "facets" as a customer id. */
+  @Get('facets')
+  facets(@Req() req: AuthedRequest) {
+    return this.customers.facets(req.user!)
+  }
+
   @Get(':id')
   get(@Req() req: AuthedRequest, @Param('id') id: string) {
     return this.customers.get(req.user!, id)

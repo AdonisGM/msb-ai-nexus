@@ -15,7 +15,7 @@ import { SessionService } from './session.service'
  *  sweep through controllers.
  *
  *  `passwordHash` is dropped here and must never be added back. */
-export function publicUser(user: User) {
+export function publicUser(user: User, manager: Manager = null) {
   return {
     id: user.id,
     code: user.code,
@@ -26,8 +26,17 @@ export function publicUser(user: User) {
     segment: user.segment,
     unitId: user.unitId,
     managerId: user.managerId,
+    /** Who they report to, by name.
+     *
+     *  Sent with the account rather than fetched per screen: a salesperson
+     *  needs to know who signs off their wins and who is chasing them, and
+     *  that line belongs on every screen they open. `managerId` alone is an
+     *  opaque id the web app cannot render. */
+    manager,
   }
 }
+
+type Manager = { id: string; name: string; role: string; title: string } | null
 
 @Controller('auth')
 export class AuthController {
@@ -47,13 +56,14 @@ export class AuthController {
   @Get('status')
   async status(@Req() req: Request) {
     const found = await this.sessions.resolve(this.token(req))
-    return { user: found ? publicUser(found.user) : null }
+    if (!found) return { user: null }
+    return { user: publicUser(found.user, await this.auth.managerOf(found.user)) }
   }
 
   @Get('me')
   @UseGuards(AuthGuard)
-  me(@Req() req: AuthedRequest) {
-    return { user: publicUser(req.user!) }
+  async me(@Req() req: AuthedRequest) {
+    return { user: publicUser(req.user!, await this.auth.managerOf(req.user!)) }
   }
 
   @Post('login')
@@ -69,7 +79,7 @@ export class AuthController {
       userAgent: req.get('user-agent'),
       ip: req.ip,
     })
-    return { user: publicUser(user) }
+    return { user: publicUser(user, await this.auth.managerOf(user)) }
   }
 
   @Post('logout')

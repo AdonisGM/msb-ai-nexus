@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { closeDb, resetDb, testDb } from '../test/db'
 import { makeBranch, makeCustomer, makeOpportunity, makeUser, type Branch } from '../test/factories'
 import { customers, opportunities, type User } from '../db/schema'
-import { customerScope, opportunityScope, type OpportunityView } from './scope'
+import { customerScope, opportunityScope } from './scope'
 
 /** The rule these tests defend: visibility runs vertically, never sideways.
  *  A salesperson sees their own book, a team lead sees their own people, a
@@ -20,11 +20,11 @@ async function visibleCustomers(user: User) {
   return rows.map((row) => row.id).sort()
 }
 
-async function visibleOpportunities(user: User, view: OpportunityView = 'actionable') {
+async function visibleOpportunities(user: User) {
   const rows = await testDb
     .select({ id: opportunities.id })
     .from(opportunities)
-    .where(opportunityScope(testDb, user, view))
+    .where(opportunityScope(testDb, user))
   return rows.map((row) => row.id).sort()
 }
 
@@ -99,107 +99,103 @@ describe('customer scope', () => {
     expect(await visibleCustomers(branch.saleSse)).toEqual([])
   })
 })
-
 describe('opportunity scope', () => {
-  async function branchWithDeals() {
+  /** One book, three leads at three points of the funnel. There is no status
+   *  gate any more, so what these assert is purely who owns what. */
+  async function branchWithLeads() {
     const branch = await makeBranch()
     const customer = await makeCustomer({ ownerId: branch.saleRb.id, segment: 'rb' })
 
-    const draft = await makeOpportunity({
+    const fresh = await makeOpportunity({
       customerId: customer.id,
       ownerId: branch.saleRb.id,
-      approvalStatus: 'sale_reviewing',
     })
-    const confirmed = await makeOpportunity({
+    const working = await makeOpportunity({
       customerId: customer.id,
       ownerId: branch.saleRb.id,
-      approvalStatus: 'sale_confirmed',
+      stage: 'advised',
     })
-    const escalated = await makeOpportunity({
+    const landed = await makeOpportunity({
       customerId: customer.id,
       ownerId: branch.saleRb.id,
-      approvalStatus: 'escalated_to_bm',
+      stage: 'advised',
+      outcome: 'won',
     })
 
-    return { ...branch, draft: draft.id, confirmed: confirmed.id, escalated: escalated.id }
+    return { ...branch, fresh: fresh.id, working: working.id, landed: landed.id }
   }
 
-  it('lets a salesperson see their own drafts', async () => {
-    const f = await branchWithDeals()
+  it('gives a salesperson their own book at every point of the funnel', async () => {
+    const f = await branchWithLeads()
     expect(await visibleOpportunities(f.saleRb)).toEqual(
-      [f.draft, f.confirmed, f.escalated].sort(),
+      [f.fresh, f.working, f.landed].sort(),
     )
   })
 
-  /** The first gate, and the answer to "is my every keystroke being watched".
-   *  It is not: a manager sees what was agreed to, not what was typed. */
-  it('hides a draft from the team lead until it is confirmed', async () => {
-    const f = await branchWithDeals()
-    const visible = await visibleOpportunities(f.leadRb)
-
-    expect(visible).not.toContain(f.draft)
-    expect(visible).toEqual([f.confirmed, f.escalated].sort())
+  /** This is the rule that replaced the old draft gate, and it is the opposite
+   *  of it. A team lead's job is to notice the lead nobody has called yet; a
+   *  scope that hid untouched leads from them would hide precisely the rows
+   *  they exist to chase. */
+  it('shows a team lead an untouched lead from the moment it exists', async () => {
+    const f = await branchWithLeads()
+    expect(await visibleOpportunities(f.leadRb)).toEqual(
+      [f.fresh, f.working, f.landed].sort(),
+    )
   })
 
-  it("hides the other team's deals from a team lead", async () => {
-    const f = await branchWithDeals()
+  it("hides the other team's leads from a team lead", async () => {
+    const f = await branchWithLeads()
     expect(await visibleOpportunities(f.leadSse)).toEqual([])
   })
 
-  /** The second gate. The totals must cover everything a team lead can see,
-   *  or the pipeline comes up short; the list a branch manager can act on must
-   *  not, or they end up reaching into every deal in the branch. */
-  it('counts every confirmed deal for a branch manager but opens only escalations', async () => {
-    const f = await branchWithDeals()
-
-    expect(await visibleOpportunities(f.bm, 'reporting')).toEqual(
-      [f.confirmed, f.escalated].sort(),
-    )
-    expect(await visibleOpportunities(f.bm, 'actionable')).toEqual([f.escalated])
-  })
-
-  it("keeps a draft out of the branch manager's totals too", async () => {
-    const f = await branchWithDeals()
-    expect(await visibleOpportunities(f.bm, 'reporting')).not.toContain(f.draft)
-  })
-
-  it('gives an admin every deal at every status', async () => {
-    const f = await branchWithDeals()
-    const admin = await makeUser({ role: 'admin', unitId: f.unit.id })
-
-    expect(await visibleOpportunities(admin)).toEqual(
-      [f.draft, f.confirmed, f.escalated].sort(),
-    )
+  /** The branch manager reports on the whole unit, so they count everything in
+   *  it — including what nobody has started. A funnel missing its own top is
+   *  not a funnel. */
+  it('gives the branch manager the whole unit, untouched leads included', async () => {
+    const f = await branchWithLeads()
+    expect(await visibleOpportunities(f.bm)).toEqual([f.fresh, f.working, f.landed].sort())
   })
 
   it('stops at the unit boundary for a branch manager', async () => {
-    const here = await branchWithDeals()
+    const here = await branchWithLeads()
     const elsewhere = await makeBranch()
     const theirCustomer = await makeCustomer({ ownerId: elsewhere.saleRb.id })
-    const theirDeal = await makeOpportunity({
+    const theirLead = await makeOpportunity({
       customerId: theirCustomer.id,
       ownerId: elsewhere.saleRb.id,
-      approvalStatus: 'escalated_to_bm',
     })
 
-    expect(await visibleOpportunities(here.bm, 'reporting')).not.toContain(theirDeal.id)
+    expect(await visibleOpportunities(here.bm)).not.toContain(theirLead.id)
+  })
+
+  it('gives an admin every lead in every branch', async () => {
+    const f = await branchWithLeads()
+    const admin = await makeUser({ role: 'admin', unitId: f.unit.id })
+
+    expect(await visibleOpportunities(admin)).toEqual([f.fresh, f.working, f.landed].sort())
   })
 
   /** Scoping has to survive being combined with the filters a screen adds,
    *  which is where a condition built as a bare `or` would silently widen. */
   it('still holds when a screen adds its own filter', async () => {
-    const f = await branchWithDeals()
+    const f = await branchWithLeads()
 
     const rows = await testDb
       .select({ id: opportunities.id })
       .from(opportunities)
-      .where(
-        and(
-          opportunityScope(testDb, f.leadRb),
-          eq(opportunities.approvalStatus, 'sale_confirmed'),
-        ),
-      )
+      .where(and(opportunityScope(testDb, f.leadRb), eq(opportunities.outcome, 'won')))
 
-    expect(rows.map((row) => row.id)).toEqual([f.confirmed])
+    expect(rows.map((row) => row.id)).toEqual([f.landed])
+  })
+
+  it("does not let a screen filter widen another team lead's view", async () => {
+    const f = await branchWithLeads()
+
+    const rows = await testDb
+      .select({ id: opportunities.id })
+      .from(opportunities)
+      .where(and(opportunityScope(testDb, f.leadSse), eq(opportunities.outcome, 'won')))
+
+    expect(rows).toEqual([])
   })
 })

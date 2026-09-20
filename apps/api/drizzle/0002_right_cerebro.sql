@@ -1,1 +1,0 @@
-ALTER TABLE "users" ADD CONSTRAINT "users_admin_outside_tree" CHECK ("users"."role" <> 'admin' or ("users"."segment" is null and "users"."manager_id" is null));

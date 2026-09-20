@@ -221,3 +221,33 @@ describe('append-only', () => {
     expect(rows[0].content).toContain('Techcombank')
   })
 })
+
+describe('who wrote it', () => {
+  /** The timeline reads "Sale ghi, Hải". An id cannot be rendered as a
+   *  person, and the screen does not hold the roster. */
+  it('names the person who recorded it', async () => {
+    const branch = await makeBranch()
+    const customer = await makeCustomer({ ownerId: branch.saleRb.id })
+    await makeSignal({
+      customerId: customer.id,
+      source: 'sale',
+      authorId: branch.saleRb.id,
+    })
+
+    const [row] = await service.list(branch.saleRb, customer.id)
+    expect(row.authorName).toBe(branch.saleRb.name)
+    expect(row.authorRole).toBe('sale')
+  })
+
+  /** The system and the model are allowed to be anonymous, and the screen
+   *  shows the source alone rather than inventing an author for them. */
+  it('leaves the name empty when nobody wrote it', async () => {
+    const branch = await makeBranch()
+    const customer = await makeCustomer({ ownerId: branch.saleRb.id })
+    await makeSignal({ customerId: customer.id, source: 'ai' })
+
+    const [row] = await service.list(branch.saleRb, customer.id)
+    expect(row.source).toBe('ai')
+    expect(row.authorName).toBeNull()
+  })
+})

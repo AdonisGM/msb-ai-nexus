@@ -1,4 +1,3 @@
-import { and, eq, isNull } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { closeDb, resetDb, testDb } from '../test/db'
 import {
@@ -6,11 +5,21 @@ import {
   makeBranch,
   makeCustomer,
   makeOpportunity,
+  makeOpportunityProduct,
   makeSignal,
+  makeTarget,
   makeUnit,
   makeUser,
 } from '../test/factories'
-import { auditEvents, customers, opportunities, signals, targets, users } from './schema'
+import {
+  auditEvents,
+  customers,
+  opportunities,
+  opportunityProducts,
+  signals,
+  targets,
+  users,
+} from './schema'
 
 /** These rules live in the database rather than in a service on purpose: they
  *  are the ones that must hold even when a future controller forgets them, so
@@ -56,6 +65,7 @@ describe('users', () => {
       testDb.insert(users).values({
         id: 'u_no_segment',
         code: 'U-NO-SEGMENT',
+        employeeCode: 'U-NO-SEGMENT',
         name: 'No segment',
         passwordHash: 'x',
         role: 'sale',
@@ -80,6 +90,7 @@ describe('users', () => {
       testDb.insert(users).values({
         id: 'u_orphan',
         code: 'U-ORPHAN',
+        employeeCode: 'U-ORPHAN',
         name: 'Orphan',
         passwordHash: 'x',
         role: 'team_lead',
@@ -100,6 +111,7 @@ describe('users', () => {
       testDb.insert(users).values({
         id: 'u_admin_segment',
         code: 'U-ADMIN-SEGMENT',
+        employeeCode: 'U-ADMIN-SEGMENT',
         name: 'Admin with a segment',
         passwordHash: 'x',
         role: 'admin',
@@ -114,6 +126,7 @@ describe('users', () => {
       testDb.insert(users).values({
         id: 'u_admin_manager',
         code: 'U-ADMIN-MANAGER',
+        employeeCode: 'U-ADMIN-MANAGER',
         name: 'Admin with a manager',
         passwordHash: 'x',
         role: 'admin',
@@ -133,6 +146,7 @@ describe('users', () => {
       testDb.insert(users).values({
         id: 'u_superuser',
         code: 'U-SUPERUSER',
+        employeeCode: 'U-SUPERUSER',
         name: 'Superuser',
         passwordHash: 'x',
         role: 'superuser',
@@ -203,16 +217,20 @@ describe('opportunities', () => {
   async function aDeal() {
     const owner = await makeUser()
     const customer = await makeCustomer({ ownerId: owner.id })
-    return { owner, customer }
+    return { owner, customer, unitId: owner.unitId }
   }
 
-  it("starts a deal in the salesperson's own draft state", async () => {
+  it('starts a lead untouched at the top of the funnel', async () => {
     const { owner, customer } = await aDeal()
     const deal = await makeOpportunity({ customerId: customer.id, ownerId: owner.id })
 
-    expect(deal.approvalStatus).toBe('sale_reviewing')
-    expect(deal.stage).toBe('prospecting')
+    expect(deal.stage).toBe('new')
     expect(deal.outcome).toBe('open')
+    expect(deal.contactedAt).toBeNull()
+    expect(deal.advisedAt).toBeNull()
+    expect(deal.closedAt).toBeNull()
+    expect(deal.confirmedAt).toBeNull()
+    expect(deal.source).toBe('manual')
     expect(deal.createdVia).toBe('manual')
   })
 
@@ -230,7 +248,7 @@ describe('opportunities', () => {
   })
 
   it('rejects a deal worth nothing', async () => {
-    const { owner, customer } = await aDeal()
+    const { owner, customer, unitId } = await aDeal()
 
     await expectViolation(
       testDb.insert(opportunities).values({
@@ -239,7 +257,8 @@ describe('opportunities', () => {
         customerId: customer.id,
         ownerId: owner.id,
         segment: 'rb',
-        product: 'Mortgage',
+        unitId,
+        product: 'loan',
         need: 'Buy a home',
         value: 0,
       }),
@@ -247,24 +266,28 @@ describe('opportunities', () => {
     )
   })
 
-  it('keeps the win probability inside nought to a hundred', async () => {
+  it('only sells a product the branch report has a column for', async () => {
     const { owner, customer } = await aDeal()
 
     await expectViolation(
-      makeOpportunity({ customerId: customer.id, ownerId: owner.id, winProbability: 101 }),
-      'opportunities_win_probability',
-    )
-    await expectViolation(
-      makeOpportunity({ customerId: customer.id, ownerId: owner.id, winProbability: -1 }),
-      'opportunities_win_probability',
+      makeOpportunity({ customerId: customer.id, ownerId: owner.id, product: 'the_tin_dung' }),
+      'opportunities_product',
     )
   })
 
   it('will not close a deal without saying why', async () => {
     const { owner, customer } = await aDeal()
 
+    /** The factory fills a reason in for every closed deal, so this one asks
+     *  for it back out — otherwise the test would pass on the factory's
+     *  courtesy rather than on the constraint. */
     await expectViolation(
-      makeOpportunity({ customerId: customer.id, ownerId: owner.id, outcome: 'lost' }),
+      makeOpportunity({
+        customerId: customer.id,
+        ownerId: owner.id,
+        outcome: 'lost',
+        outcomeReason: null,
+      }),
       'opportunities_outcome_reason',
     )
 
@@ -294,17 +317,241 @@ describe('opportunities', () => {
     expect(stuck.blockerCode).toBe('rate')
   })
 
-  it('rejects an approval status outside the ten from the brief', async () => {
+  it('rejects a stage outside the three-step funnel', async () => {
+    const { owner, customer } = await aDeal()
+
+    await expectViolation(
+      makeOpportunity({ customerId: customer.id, ownerId: owner.id, stage: 'negotiation' }),
+      'opportunities_stage',
+    )
+  })
+
+  /** The funnel is counted from the marks, not from the stage column, so a row
+   *  where the two disagree would be counted by one screen and missed by
+   *  another with nobody able to say which figure was right. */
+  it('keeps the stage and its funnel marks locked together', async () => {
     const { owner, customer } = await aDeal()
 
     await expectViolation(
       makeOpportunity({
         customerId: customer.id,
         ownerId: owner.id,
-        approvalStatus: 'waiting_for_legal',
+        stage: 'contacted',
+        contactedAt: null,
       }),
-      'opportunities_approval_status',
+      'opportunities_stage_marks',
     )
+
+    await expectViolation(
+      makeOpportunity({
+        customerId: customer.id,
+        ownerId: owner.id,
+        stage: 'advised',
+        advisedAt: null,
+      }),
+      'opportunities_stage_marks',
+    )
+
+    await expectViolation(
+      makeOpportunity({
+        customerId: customer.id,
+        ownerId: owner.id,
+        stage: 'new',
+        contactedAt: new Date(),
+      }),
+      'opportunities_stage_marks',
+    )
+  })
+
+  it('walks a lead through the funnel, marking each step', async () => {
+    const { owner, customer } = await aDeal()
+
+    const fresh = await makeOpportunity({ customerId: customer.id, ownerId: owner.id })
+    expect(fresh.contactedAt).toBeNull()
+
+    const called = await makeOpportunity({
+      customerId: customer.id,
+      ownerId: owner.id,
+      stage: 'contacted',
+    })
+    expect(called.contactedAt).not.toBeNull()
+    expect(called.advisedAt).toBeNull()
+
+    const advised = await makeOpportunity({
+      customerId: customer.id,
+      ownerId: owner.id,
+      stage: 'advised',
+    })
+    expect(advised.contactedAt).not.toBeNull()
+    expect(advised.advisedAt).not.toBeNull()
+  })
+
+  /** A deal can land straight off a first call — the funnel measures how far
+   *  the conversation got, not a sequence the outcome has to pass through. */
+  it('lets a lead be won without ever reaching the advised step', async () => {
+    const { owner, customer } = await aDeal()
+
+    const won = await makeOpportunity({
+      customerId: customer.id,
+      ownerId: owner.id,
+      stage: 'contacted',
+      outcome: 'won',
+      outcomeReason: 'Signed on the first call',
+    })
+
+    expect(won.stage).toBe('contacted')
+    expect(won.advisedAt).toBeNull()
+    expect(won.closedAt).not.toBeNull()
+  })
+
+  it('keeps the outcome and the closing time locked together', async () => {
+    const { owner, customer } = await aDeal()
+
+    await expectViolation(
+      makeOpportunity({
+        customerId: customer.id,
+        ownerId: owner.id,
+        outcome: 'won',
+        outcomeReason: 'Signed',
+        closedAt: null,
+      }),
+      'opportunities_closed_mark',
+    )
+
+    await expectViolation(
+      makeOpportunity({ customerId: customer.id, ownerId: owner.id, closedAt: new Date() }),
+      'opportunities_closed_mark',
+    )
+  })
+
+  describe("the team lead's reconciliation mark", () => {
+    it('records who checked the paperwork and when', async () => {
+      const { owner, customer } = await aDeal()
+      const lead = await makeUser({ role: 'team_lead' })
+
+      const confirmed = await makeOpportunity({
+        customerId: customer.id,
+        ownerId: owner.id,
+        outcome: 'won',
+        outcomeReason: 'Card issued',
+        confirmedById: lead.id,
+        confirmedAt: new Date(),
+        confirmNote: 'Matches the signed application',
+      })
+
+      expect(confirmed.confirmedById).toBe(lead.id)
+    })
+
+    it('refuses a signature with nobody behind it, or a signer with no date', async () => {
+      const { owner, customer } = await aDeal()
+      const lead = await makeUser({ role: 'team_lead' })
+
+      await expectViolation(
+        makeOpportunity({
+          customerId: customer.id,
+          ownerId: owner.id,
+          outcome: 'won',
+          outcomeReason: 'Card issued',
+          confirmedAt: new Date(),
+        }),
+        'opportunities_confirm_pair',
+      )
+
+      await expectViolation(
+        makeOpportunity({
+          customerId: customer.id,
+          ownerId: owner.id,
+          outcome: 'won',
+          outcomeReason: 'Card issued',
+          confirmedById: lead.id,
+        }),
+        'opportunities_confirm_pair',
+      )
+    })
+
+    /** There is no paperwork to check against until the deal has landed one
+     *  way or the other. */
+    it('refuses to reconcile a lead that is still open', async () => {
+      const { owner, customer } = await aDeal()
+      const lead = await makeUser({ role: 'team_lead' })
+
+      await expectViolation(
+        makeOpportunity({
+          customerId: customer.id,
+          ownerId: owner.id,
+          confirmedById: lead.id,
+          confirmedAt: new Date(),
+        }),
+        'opportunities_confirm_closed',
+      )
+    })
+  })
+})
+
+describe('opportunity products', () => {
+  async function aWonDeal() {
+    const owner = await makeUser()
+    const customer = await makeCustomer({ ownerId: owner.id })
+    const deal = await makeOpportunity({
+      customerId: customer.id,
+      ownerId: owner.id,
+      stage: 'advised',
+      outcome: 'won',
+      outcomeReason: 'Signed',
+    })
+    return { owner, deal }
+  }
+
+  /** The branch's own figures show more products than successful deals — a
+   *  card sold alongside an overdraft is one deal and two product rows — which
+   *  is the reason this is a table and not a column. */
+  it('lets one deal carry more than one product', async () => {
+    const { deal } = await aWonDeal()
+
+    await makeOpportunityProduct({ opportunityId: deal.id, product: 'card', amount: 0 })
+    await makeOpportunityProduct({
+      opportunityId: deal.id,
+      product: 'od',
+      amount: 500_000_000,
+    })
+
+    const rows = await testDb.select().from(opportunityProducts)
+    expect(rows).toHaveLength(2)
+    expect(rows.reduce((total, row) => total + row.amount, 0)).toBe(500_000_000)
+  })
+
+  it('refuses the same product twice, which would double the branch count', async () => {
+    const { deal } = await aWonDeal()
+
+    await makeOpportunityProduct({ opportunityId: deal.id, product: 'card' })
+    await expectViolation(
+      makeOpportunityProduct({ opportunityId: deal.id, product: 'card' }),
+      'opportunity_products_key',
+    )
+  })
+
+  it('accepts a product sold for nothing but not for less', async () => {
+    const { deal } = await aWonDeal()
+
+    const free = await makeOpportunityProduct({
+      opportunityId: deal.id,
+      product: 'casa',
+      amount: 0,
+    })
+    expect(free.amount).toBe(0)
+
+    await expectViolation(
+      makeOpportunityProduct({ opportunityId: deal.id, product: 'card', amount: -1 }),
+      'opportunity_products_amount',
+    )
+  })
+
+  it('goes away with its deal', async () => {
+    const { deal } = await aWonDeal()
+    await makeOpportunityProduct({ opportunityId: deal.id })
+
+    await testDb.delete(opportunities)
+    expect(await testDb.select().from(opportunityProducts)).toHaveLength(0)
   })
 })
 
@@ -316,45 +563,17 @@ describe('audit events', () => {
     return { owner, deal }
   }
 
-  it('starts a trace with no predecessor and nothing to time', async () => {
+  it('starts a trace with nothing to measure from', async () => {
     const { owner, deal } = await aDeal()
 
-    const [first] = await testDb
-      .insert(auditEvents)
-      .values({
-        id: 'aud_first',
-        opportunityId: deal.id,
-        seq: 1,
-        actorId: owner.id,
-        fromStatus: null,
-        toStatus: 'sale_reviewing',
-        direction: 'up',
-        toUserId: owner.id,
-        heldMs: null,
-      })
-      .returning()
+    const first = await makeAuditEvent({
+      opportunityId: deal.id,
+      actorId: owner.id,
+      kind: 'created',
+    })
 
     expect(first.seq).toBe(1)
     expect(first.heldMs).toBeNull()
-  })
-
-  it('refuses a later event that pretends to be the first', async () => {
-    const { owner, deal } = await aDeal()
-
-    await expectViolation(
-      testDb.insert(auditEvents).values({
-        id: 'aud_gap',
-        opportunityId: deal.id,
-        seq: 2,
-        actorId: owner.id,
-        fromStatus: null,
-        toStatus: 'sale_confirmed',
-        direction: 'up',
-        toUserId: owner.id,
-        heldMs: 5_000,
-      }),
-      'audit_events_first_event',
-    )
   })
 
   it('refuses a later event with no time recorded, which would bend every duration', async () => {
@@ -366,216 +585,173 @@ describe('audit events', () => {
         opportunityId: deal.id,
         seq: 2,
         actorId: owner.id,
-        fromStatus: 'sale_reviewing',
-        toStatus: 'sale_confirmed',
-        direction: 'up',
-        toUserId: owner.id,
+        kind: 'contacted',
         heldMs: null,
       }),
       'audit_events_first_event',
     )
   })
 
-  it('makes a handover name someone and an in-place edit name nobody', async () => {
+  it('refuses a first event that claims to have been waiting', async () => {
     const { owner, deal } = await aDeal()
 
     await expectViolation(
       testDb.insert(auditEvents).values({
-        id: 'aud_nowhere',
+        id: 'aud_early',
         opportunityId: deal.id,
         seq: 1,
         actorId: owner.id,
-        fromStatus: null,
-        toStatus: 'sale_confirmed',
-        direction: 'up',
-        toUserId: null,
-        heldMs: null,
+        kind: 'created',
+        heldMs: 5_000,
       }),
-      'audit_events_to_user_by_direction',
+      'audit_events_first_event',
     )
+  })
+
+  it('rejects an event kind nobody reports on', async () => {
+    const { owner, deal } = await aDeal()
 
     await expectViolation(
-      testDb.insert(auditEvents).values({
-        id: 'aud_edit_to_someone',
-        opportunityId: deal.id,
-        seq: 1,
-        actorId: owner.id,
-        fromStatus: null,
-        toStatus: 'sale_reviewing',
-        direction: 'in_place',
-        toUserId: owner.id,
-        heldMs: null,
-      }),
-      'audit_events_to_user_by_direction',
+      makeAuditEvent({ opportunityId: deal.id, actorId: owner.id, kind: 'escalated' }),
+      'audit_events_kind',
     )
   })
 
   it('will not let two events claim the same position in a trace', async () => {
     const { owner, deal } = await aDeal()
 
-    await testDb.insert(auditEvents).values({
-      id: 'aud_a',
-      opportunityId: deal.id,
-      seq: 1,
-      actorId: owner.id,
-      fromStatus: null,
-      toStatus: 'sale_reviewing',
-      direction: 'up',
-      toUserId: owner.id,
-      heldMs: null,
-    })
+    await makeAuditEvent({ opportunityId: deal.id, actorId: owner.id, seq: 1 })
 
     await expectViolation(
-      testDb.insert(auditEvents).values({
-        id: 'aud_b',
-        opportunityId: deal.id,
-        seq: 1,
-        actorId: owner.id,
-        fromStatus: null,
-        toStatus: 'sale_confirmed',
-        direction: 'up',
-        toUserId: owner.id,
-        heldMs: null,
-      }),
+      makeAuditEvent({ opportunityId: deal.id, actorId: owner.id, seq: 1 }),
       'audit_events_trace',
     )
   })
 
-  it('leaves a handover unread until someone looks at it', async () => {
+  /** A reassignment is a field change like any other. Keeping it in `changes`
+   *  rather than in a column of its own is what let the recipient column go
+   *  when the approval chain did. */
+  it('records a handover as a change of owner', async () => {
     const { owner, deal } = await aDeal()
-    const lead = await makeUser({ role: 'team_lead' })
+    const admin = await makeUser({ role: 'admin' })
+    const taker = await makeUser({ role: 'sale' })
 
     const handover = await makeAuditEvent({
       opportunityId: deal.id,
-      actorId: owner.id,
-      toUserId: lead.id,
-      toStatus: 'sale_confirmed',
-      direction: 'up',
+      actorId: admin.id,
+      kind: 'assigned',
+      changes: { ownerId: [owner.id, taker.id] },
     })
-    expect(handover.readAt).toBeNull()
 
-    /** The unread badge is this query — no notifications table needed. */
-    const unread = await testDb
-      .select()
-      .from(auditEvents)
-      .where(and(eq(auditEvents.toUserId, lead.id), isNull(auditEvents.readAt)))
-    expect(unread).toHaveLength(1)
-
-    await testDb
-      .update(auditEvents)
-      .set({ readAt: new Date() })
-      .where(eq(auditEvents.id, handover.id))
-
-    const stillUnread = await testDb
-      .select()
-      .from(auditEvents)
-      .where(and(eq(auditEvents.toUserId, lead.id), isNull(auditEvents.readAt)))
-    expect(stillUnread).toHaveLength(0)
+    expect(handover.changes).toEqual({ ownerId: [owner.id, taker.id] })
   })
 
-  it('refuses a read mark on an edit addressed to nobody', async () => {
+  /** The whole point of storing `heldMs` at write time: the branch average for
+   *  "handed out on Monday, first called on Friday" is a sum over one column,
+   *  not a window function over the log. */
+  it('answers how long each step took in one pass', async () => {
     const { owner, deal } = await aDeal()
 
-    await expectViolation(
-      testDb.insert(auditEvents).values({
-        id: 'aud_read_edit',
-        opportunityId: deal.id,
-        seq: 1,
-        actorId: owner.id,
-        fromStatus: null,
-        toStatus: 'sale_reviewing',
-        direction: 'in_place',
-        toUserId: null,
-        heldMs: null,
-        readAt: new Date(),
-      }),
-      'audit_events_read_by_direction',
-    )
-  })
-
-  it('answers the flow chart in one query, loop-backs included', async () => {
-    const { owner, deal } = await aDeal()
-
-    const trace: Array<[number, string | null, string, number | null]> = [
-      [1, null, 'sale_reviewing', null],
-      [2, 'sale_reviewing', 'sale_confirmed', 60_000],
-      [3, 'sale_confirmed', 'lead_returned', 120_000],
-      [4, 'lead_returned', 'sale_confirmed', 30_000],
-      [5, 'sale_confirmed', 'lead_approved', 45_000],
+    const trace: Array<[number, string, number | null]> = [
+      [1, 'created', null],
+      [2, 'assigned', 30_000],
+      [3, 'contacted', 172_800_000],
+      [4, 'advised', 86_400_000],
+      [5, 'won', 3_600_000],
+      [6, 'confirmed', 7_200_000],
     ]
 
-    for (const [seq, fromStatus, toStatus, heldMs] of trace) {
-      await testDb.insert(auditEvents).values({
-        id: `aud_flow_${seq}`,
+    for (const [seq, kind, heldMs] of trace) {
+      await makeAuditEvent({
         opportunityId: deal.id,
-        seq,
         actorId: owner.id,
-        fromStatus,
-        toStatus,
-        direction: fromStatus === 'lead_returned' ? 'up' : 'down',
-        toUserId: owner.id,
+        seq,
+        kind: kind as never,
         heldMs,
       })
     }
 
     const rows = await testDb.select().from(auditEvents)
-    expect(rows).toHaveLength(5)
+    expect(rows).toHaveLength(6)
 
-    /** The send-back and the rework after it both survive as their own edges,
-     *  which is what makes the loop visible on a flow chart instead of the
-     *  deal appearing to go straight through. */
-    const sentBack = rows.filter((row) => row.toStatus === 'lead_returned')
-    expect(sentBack).toHaveLength(1)
+    const firstCall = rows.find((row) => row.kind === 'contacted')
+    expect(firstCall?.heldMs).toBe(172_800_000)
 
     const timed = rows.filter((row) => row.heldMs !== null)
-    expect(timed).toHaveLength(4)
-    expect(timed.reduce((total, row) => total + (row.heldMs ?? 0), 0)).toBe(255_000)
+    expect(timed).toHaveLength(5)
+    expect(timed.reduce((total, row) => total + (row.heldMs ?? 0), 0)).toBe(270_030_000)
+  })
+
+  it('goes away with its deal', async () => {
+    const { owner, deal } = await aDeal()
+    await makeAuditEvent({ opportunityId: deal.id, actorId: owner.id })
+
+    await testDb.delete(opportunities)
+    expect(await testDb.select().from(auditEvents)).toHaveLength(0)
   })
 })
 
 describe('targets', () => {
+  /** The branch reports against a conversion rate, so that is the default
+   *  metric. Basis points keep the gap arithmetic in integers: 600 is 6%. */
   it('stores a unit number and a personal number side by side', async () => {
     const branch = await makeBranch()
 
-    const unitTarget = await testDb
-      .insert(targets)
-      .values({
-        id: 'tgt_unit',
-        scope: 'unit',
-        unitId: branch.unit.id,
-        period: '2026-Q3',
-        amount: 10_000_000_000,
-      })
-      .returning()
+    const unitTarget = await makeTarget({ unitId: branch.unit.id, amount: 600 })
+    const personal = await makeTarget({
+      scope: 'user',
+      ownerId: branch.saleRb.id,
+      unitId: branch.unit.id,
+      amount: 800,
+    })
 
-    const personal = await testDb
-      .insert(targets)
-      .values({
-        id: 'tgt_person',
-        scope: 'user',
-        ownerId: branch.saleRb.id,
-        unitId: branch.unit.id,
-        period: '2026-Q3',
-        amount: 2_000_000_000,
-      })
-      .returning()
+    expect(unitTarget.ownerId).toBeNull()
+    expect(unitTarget.metric).toBe('cr_rate')
+    expect(personal.ownerId).toBe(branch.saleRb.id)
+  })
 
-    expect(unitTarget[0].ownerId).toBeNull()
-    expect(personal[0].ownerId).toBe(branch.saleRb.id)
+  it('carries a money target beside a rate target without either replacing the other', async () => {
+    const branch = await makeBranch()
+
+    await makeTarget({ unitId: branch.unit.id, metric: 'cr_rate', amount: 600 })
+    await makeTarget({ unitId: branch.unit.id, metric: 'value', amount: 10_000_000_000 })
+    await makeTarget({ unitId: branch.unit.id, metric: 'deals', amount: 284 })
+
+    expect(await testDb.select().from(targets)).toHaveLength(3)
+  })
+
+  it('rejects a metric nothing reports on', async () => {
+    const branch = await makeBranch()
+
+    await expectViolation(
+      makeTarget({ unitId: branch.unit.id, metric: 'headcount', amount: 5 }),
+      'targets_metric',
+    )
+  })
+
+  /** A rate above 100% is a typo, and one that reaches a report makes every
+   *  gap on it negative. */
+  it('refuses a conversion target above a hundred percent', async () => {
+    const branch = await makeBranch()
+
+    await expectViolation(
+      makeTarget({ unitId: branch.unit.id, metric: 'cr_rate', amount: 10_001 }),
+      'targets_cr_rate_range',
+    )
+
+    const exactly = await makeTarget({
+      unitId: branch.unit.id,
+      metric: 'cr_rate',
+      amount: 10_000,
+    })
+    expect(exactly.amount).toBe(10_000)
   })
 
   it('refuses a unit target that also names a person, which would double count', async () => {
     const branch = await makeBranch()
 
     await expectViolation(
-      testDb.insert(targets).values({
-        id: 'tgt_both',
-        scope: 'unit',
-        ownerId: branch.saleRb.id,
-        unitId: branch.unit.id,
-        period: '2026-Q3',
-        amount: 1_000_000,
-      }),
+      makeTarget({ unitId: branch.unit.id, scope: 'unit', ownerId: branch.saleRb.id }),
       'targets_owner_by_scope',
     )
   })
@@ -584,13 +760,7 @@ describe('targets', () => {
     const branch = await makeBranch()
 
     await expectViolation(
-      testDb.insert(targets).values({
-        id: 'tgt_nobody',
-        scope: 'user',
-        unitId: branch.unit.id,
-        period: '2026-Q3',
-        amount: 1_000_000,
-      }),
+      makeTarget({ unitId: branch.unit.id, scope: 'user' }),
       'targets_owner_by_scope',
     )
   })
@@ -599,25 +769,13 @@ describe('targets', () => {
    *  distinct, so a plain index would let two unit targets for the same
    *  quarter through, and the gap would then depend on which row a query read
    *  first. */
-  it('allows only one unit target per period', async () => {
+  it('allows only one unit target per metric per period', async () => {
     const branch = await makeBranch()
 
-    await testDb.insert(targets).values({
-      id: 'tgt_one',
-      scope: 'unit',
-      unitId: branch.unit.id,
-      period: '2026-Q3',
-      amount: 10_000_000_000,
-    })
+    await makeTarget({ unitId: branch.unit.id, amount: 600 })
 
     await expectViolation(
-      testDb.insert(targets).values({
-        id: 'tgt_two',
-        scope: 'unit',
-        unitId: branch.unit.id,
-        period: '2026-Q3',
-        amount: 20_000_000_000,
-      }),
+      makeTarget({ unitId: branch.unit.id, amount: 700 }),
       'targets_key',
     )
   })
@@ -626,14 +784,7 @@ describe('targets', () => {
     const branch = await makeBranch()
 
     for (const segment of ['sse', 'rb'] as const) {
-      await testDb.insert(targets).values({
-        id: `tgt_${segment}`,
-        scope: 'unit',
-        unitId: branch.unit.id,
-        segment,
-        period: '2026-Q3',
-        amount: 5_000_000_000,
-      })
+      await makeTarget({ unitId: branch.unit.id, segment, amount: 600 })
     }
 
     expect(await testDb.select().from(targets)).toHaveLength(2)
@@ -642,15 +793,6 @@ describe('targets', () => {
   it('rejects a target of zero', async () => {
     const branch = await makeBranch()
 
-    await expectViolation(
-      testDb.insert(targets).values({
-        id: 'tgt_zero',
-        scope: 'unit',
-        unitId: branch.unit.id,
-        period: '2026-Q3',
-        amount: 0,
-      }),
-      'targets_amount',
-    )
+    await expectViolation(makeTarget({ unitId: branch.unit.id, amount: 0 }), 'targets_amount')
   })
 })

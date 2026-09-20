@@ -1,9 +1,10 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common'
 import { randomUUID } from 'node:crypto'
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, getTableColumns } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import { customerScope } from '../auth/scope'
 import { DB, type Db } from '../db/db.module'
-import { customers, signals, type Signal, type User } from '../db/schema'
+import { customers, signals, users, type Signal, type User } from '../db/schema'
 import type { CreateSignalDto, ListSignalsDto } from './dto'
 
 export const DEFAULT_LIMIT = 50
@@ -22,16 +23,26 @@ export const DEFAULT_LIMIT = 50
 export class SignalsService {
   constructor(@Inject(DB) private readonly db: Db) {}
 
-  async list(user: User, customerId: string, query: ListSignalsDto = {}): Promise<Signal[]> {
+  async list(user: User, customerId: string, query: ListSignalsDto = {}) {
     await this.assertCustomerVisible(user, customerId)
 
     const where = query.type
       ? and(eq(signals.customerId, customerId), eq(signals.type, query.type))
       : eq(signals.customerId, customerId)
 
+    const author = alias(users, 'author')
+
     return this.db
-      .select()
+      .select({
+        ...getTableColumns(signals),
+        /** Who wrote it, by name. The timeline reads "Sale ghi, Hải", and an
+         *  id cannot be rendered as a person. Null where the system or the
+         *  model wrote the row, which the screen shows as the source alone. */
+        authorName: author.name,
+        authorRole: author.role,
+      })
       .from(signals)
+      .leftJoin(author, eq(author.id, signals.authorId))
       .where(where)
       /** Newest first, and by what was observed rather than what was typed. */
       .orderBy(desc(signals.observedAt), desc(signals.createdAt))

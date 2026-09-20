@@ -19,7 +19,12 @@ export const ACCOUNT_IDS = {
 
 type SeedUser = {
   id: string
+  /** Login handle. */
   code: string
+  /** Staff number, which is what a bulk upload of leads names people by.
+   *  Invented for the trial — replace both this and the real numbers together
+   *  when HR's list arrives. */
+  employeeCode: string
   name: string
   role: Role
   title: string
@@ -33,6 +38,7 @@ type SeedUser = {
 const ADMIN: SeedUser = {
   id: ACCOUNT_IDS.admin,
   code: 'ADMIN-01',
+  employeeCode: 'NV0001',
   name: 'Nguyễn Mạnh Tùng',
   role: 'admin',
   title: 'Quản trị hệ thống',
@@ -48,6 +54,7 @@ const OPERATORS: SeedUser[] = [
   {
     id: ACCOUNT_IDS.bm,
     code: 'BM-TH-01',
+    employeeCode: 'NV0002',
     name: 'Đức Anh',
     role: 'bm',
     title: 'Giám đốc đơn vị',
@@ -58,6 +65,7 @@ const OPERATORS: SeedUser[] = [
   {
     id: ACCOUNT_IDS.leadSse,
     code: 'TL-SSE-01',
+    employeeCode: 'NV0003',
     name: 'Bùi Phương',
     role: 'team_lead',
     title: 'Trưởng nhóm khách hàng doanh nghiệp SSE',
@@ -68,6 +76,7 @@ const OPERATORS: SeedUser[] = [
   {
     id: ACCOUNT_IDS.leadRb,
     code: 'TL-RB-01',
+    employeeCode: 'NV0004',
     name: 'Huy',
     role: 'team_lead',
     title: 'Trưởng nhóm khách hàng cá nhân',
@@ -78,6 +87,7 @@ const OPERATORS: SeedUser[] = [
   {
     id: ACCOUNT_IDS.saleSse,
     code: 'SALE-SSE-01',
+    employeeCode: 'NV0005',
     name: 'Hà',
     role: 'sale',
     title: 'Chuyên viên khách hàng doanh nghiệp SSE',
@@ -88,6 +98,7 @@ const OPERATORS: SeedUser[] = [
   {
     id: ACCOUNT_IDS.saleRb,
     code: 'SALE-RB-01',
+    employeeCode: 'NV0006',
     name: 'Hải',
     role: 'sale',
     title: 'Chuyên viên khách hàng cá nhân',
@@ -118,6 +129,7 @@ export async function seedAccounts(db: Db, password: string) {
         target: users.id,
         set: {
           code: user.code,
+          employeeCode: user.employeeCode,
           name: user.name,
           role: user.role,
           title: user.title,

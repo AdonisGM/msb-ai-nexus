@@ -17,6 +17,7 @@ export const testDb: Db = drizzle(client, { schema })
  *  unrelated hours later. */
 const TABLES = [
   'audit_events',
+  'opportunity_products',
   'opportunities',
   'signals',
   'customers',

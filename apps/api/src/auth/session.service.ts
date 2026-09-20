@@ -88,4 +88,13 @@ export class SessionService {
       path: '/',
     })
   }
+
+  /** Signs an account out everywhere.
+   *
+   *  A password reset that left the old sessions alive would be no reset at
+   *  all: whoever prompted it — a shared password, a laptop left on a desk —
+   *  would still be signed in on the device that caused the problem. */
+  async revokeAllFor(userId: string) {
+    await this.db.delete(sessions).where(eq(sessions.userId, userId))
+  }
 }

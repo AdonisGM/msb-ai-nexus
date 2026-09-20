@@ -9,7 +9,14 @@ import { randomUUID } from 'node:crypto'
 import { and, asc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm'
 import { canAssignTo } from '../auth/scope'
 import { DB, type Db } from '../db/db.module'
-import { SALES_ROLES, targets, users, type Target, type User } from '../db/schema'
+import {
+  BPS_PER_UNIT,
+  SALES_ROLES,
+  targets,
+  users,
+  type Target,
+  type User,
+} from '../db/schema'
 import type { ListTargetsDto, SetTargetDto } from './dto'
 
 /** Who owes what, per period.
@@ -34,6 +41,7 @@ export class TargetsService {
     const parts: (SQL | undefined)[] = [this.scopeFor(user)]
     if (query.period) parts.push(eq(targets.period, query.period))
     if (query.scope) parts.push(eq(targets.scope, query.scope))
+    if (query.metric) parts.push(eq(targets.metric, query.metric))
 
     const defined = parts.filter((part): part is SQL => part !== undefined)
 
@@ -42,7 +50,7 @@ export class TargetsService {
       .from(targets)
       .where(defined.length > 0 ? and(...defined) : undefined)
       /** Unit numbers first — the context a personal one is read against. */
-      .orderBy(asc(targets.period), asc(targets.scope), asc(targets.ownerId))
+      .orderBy(asc(targets.period), asc(targets.scope), asc(targets.metric), asc(targets.ownerId))
   }
 
   /** Sets a number, replacing whatever was there for the same person, segment
@@ -62,6 +70,15 @@ export class TargetsService {
 
     const ownerId = body.scope === 'user' ? (body.ownerId ?? null) : null
     const segment = body.segment ?? null
+    const metric = body.metric ?? 'cr_rate'
+
+    /** A conversion target above a hundred percent is a typo, and one that
+     *  reaches a report makes every gap on it negative. The database refuses
+     *  it too; saying so here means the caller gets a sentence rather than a
+     *  constraint name. */
+    if (metric === 'cr_rate' && body.amount > BPS_PER_UNIT) {
+      throw new BadRequestException('cr_rate_above_one_hundred_percent')
+    }
 
     /** Find-then-write rather than an upsert clause: the unique index is an
      *  expression index — it coalesces the nullable columns, because Postgres
@@ -78,6 +95,7 @@ export class TargetsService {
         and(
           eq(targets.scope, body.scope),
           eq(targets.unitId, unitId),
+          eq(targets.metric, metric),
           eq(targets.period, body.period),
           ownerId ? eq(targets.ownerId, ownerId) : isNull(targets.ownerId),
           segment ? eq(targets.segment, segment) : isNull(targets.segment),
@@ -96,6 +114,7 @@ export class TargetsService {
           ownerId,
           unitId,
           segment,
+          metric,
           period: body.period,
           amount: body.amount,
           note: body.note ?? null,
@@ -116,6 +135,7 @@ export class TargetsService {
           and(
             eq(targets.scope, body.scope),
             eq(targets.unitId, unitId),
+            eq(targets.metric, metric),
             eq(targets.period, body.period),
             ownerId ? eq(targets.ownerId, ownerId) : isNull(targets.ownerId),
             segment ? eq(targets.segment, segment) : isNull(targets.segment),

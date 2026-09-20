@@ -5,10 +5,11 @@ import { DbModule } from './db/db.module'
 import { OpportunitiesModule } from './opportunities/opportunities.module'
 import { SignalsModule } from './signals/signals.module'
 import { TargetsModule } from './targets/targets.module'
+import { UsersModule } from './users/users.module'
 import { HealthController } from './health.controller'
 
 @Module({
-  imports: [DbModule, AuthModule, CustomersModule, OpportunitiesModule, SignalsModule, TargetsModule],
+  imports: [DbModule, AuthModule, CustomersModule, OpportunitiesModule, SignalsModule, TargetsModule, UsersModule],
   controllers: [HealthController],
 })
 export class AppModule {}
