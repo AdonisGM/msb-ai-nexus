@@ -43,7 +43,7 @@ function OpportunitiesScreen() {
   const { user } = Route.useRouteContext()
   const navigate = useNavigate()
 
-  const table = useTableState<Filters>(EMPTY, 50)
+  const table = useTableState<Filters>(EMPTY)
   const q = useDebounced(table.filters.q)
 
   const query = useQuery(

@@ -64,7 +64,7 @@ function CustomersScreen() {
   const { user } = Route.useRouteContext()
   const navigate = useNavigate()
 
-  const table = useTableState<Filters>(EMPTY, 25)
+  const table = useTableState<Filters>(EMPTY)
   /** The box updates instantly, the request waits for a pause. */
   const q = useDebounced(table.filters.q)
 

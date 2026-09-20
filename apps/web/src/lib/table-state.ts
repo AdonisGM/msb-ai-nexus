@@ -3,15 +3,14 @@ import type { DateFilter, DatePreset } from './dates'
 
 /** Số dòng mỗi trang.
  *
- *  Trước đây mỗi bảng một con số riêng — 5, 6, 8, 10, 12 — không theo lý lẽ nào,
- *  và với ba nghìn bút toán thì mười dòng một trang thành ba trăm ba mươi sáu
- *  trang. Giờ mặc định là 25 cho mọi bảng có một dòng cho một bản ghi.
+ *  Mười, cho mọi bảng. Chọn theo màn hình chứ không theo dữ liệu: mười dòng vừa
+ *  đúng một khung nhìn nên người đọc thấy hết bảng mà không phải cuộn, và thanh
+ *  phân trang luôn nằm trong tầm mắt thay vì trôi xuống dưới.
  *
- *  Bảng nào một bản ghi trải ra nhiều dòng thì tự truyền số của nó: trang Sổ ghi
- *  kép vẽ mỗi dòng nợ có một hàng, trung bình hai hàng một bút toán, nên 25 bút
- *  toán là năm chục hàng và phải cuộn mãi mới hết một trang. */
-export const DEFAULT_PAGE_SIZE = 25
-export const PAGE_SIZES = [25, 50, 100]
+ *  Ai cần nhiều hơn thì đổi ngay trên thanh phân trang, và lựa chọn ấy giữ
+ *  nguyên trong suốt phiên làm việc. */
+export const DEFAULT_PAGE_SIZE = 10
+export const PAGE_SIZES = [10, 25, 50, 100]
 
 /** Kỳ mặc định: cả sổ. */
 export const ALL_DATES: DateFilter = { preset: 'all', from: '', to: '' }

@@ -23,7 +23,7 @@ function UsersScreen() {
   const { user } = Route.useRouteContext()
   const navigate = useNavigate()
 
-  const table = useTableState<Filters>(EMPTY, 100)
+  const table = useTableState<Filters>(EMPTY)
   const q = useDebounced(table.filters.q)
   const [editing, setEditing] = useState<UserRow | null>(null)
   const [creating, setCreating] = useState(false)

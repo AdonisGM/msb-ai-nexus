@@ -52,7 +52,10 @@ import {
   type Relation,
 } from './funnel'
 
-export const DEFAULT_PAGE_SIZE = 25
+/** What a caller gets when they ask for a page without saying how big.
+ *  Matches the web app's own default, so the first screen a person sees holds
+ *  exactly one page and the two sides never disagree about what page 2 is. */
+export const DEFAULT_PAGE_SIZE = 10
 
 /** Fields worth recording a before/after for. The funnel marks are left out:
  *  the action already says what moved, and the timestamps beside it would bury
