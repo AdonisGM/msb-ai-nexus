@@ -14,7 +14,7 @@
 # duyệt, nginx ở đây dùng chứng chỉ tự ký cho chặng Cloudflare ↔ máy chủ. Ở
 # Cloudflare để chế độ "Full", KHÔNG phải "Full (strict)".
 #
-# Hai container nghe trên 127.0.0.1 cổng 4510 và 4511.
+# Ba container nghe trên 127.0.0.1: 4510 (web), 4511 (api), 4520 (Langfuse).
 #
 # Không có khối map $http_upgrade, và không cần: web là trang tĩnh do nginx
 # trong container phục vụ, API là REST thuần. Không chỗ nào dùng WebSocket.
@@ -39,6 +39,7 @@
 # ── Upstream ────────────────────────────────────────────────────────────────
 upstream nexus_web { zone nexus_web 64k; server 127.0.0.1:4510; keepalive 2; }
 upstream nexus_api { zone nexus_api 64k; server 127.0.0.1:4511; keepalive 2; }
+upstream langfuse   { zone langfuse   64k; server 127.0.0.1:4520; keepalive 4; }
 
 # Tệp này tự chứa, không include snippet nào. Lặp lại tám dòng header proxy hai
 # lần rẻ hơn nhiều so với việc quên chép một snippet lên rồi nginx không khởi
@@ -48,7 +49,7 @@ upstream nexus_api { zone nexus_api 64k; server 127.0.0.1:4511; keepalive 2; }
 server {
     listen 80;
     listen [::]:80;
-    server_name nexus.nmtung.dev api-nexus.nmtung.dev;
+    server_name nexus.nmtung.dev api-nexus.nmtung.dev langfuse.nmtung.dev;
     return 301 https://$host$request_uri;
 }
 
@@ -124,5 +125,72 @@ server {
         proxy_send_timeout    60s;
         proxy_read_timeout    60s;
         proxy_pass http://nexus_api;
+    }
+}
+
+# ── Langfuse ────────────────────────────────────────────────────────────────
+#
+# Khác hai khối trên ba chỗ, và cả ba đều có lý do cụ thể:
+#
+# 1. `proxy_buffering off`. Langfuse trả một số phản hồi theo kiểu chảy dần.
+#    Mặc định nginx giữ lại cho tới khi đủ rồi mới đẩy đi một lượt — trang
+#    trông như treo rồi bất chợt hiện hết. Giống hệt lý do API Nexus phải gửi
+#    `X-Accel-Buffering: no` cho luồng chat.
+#
+# 2. Thời gian chờ 120 giây thay vì 60. Màn thống kê chạy truy vấn ClickHouse
+#    trên toàn bộ khoảng thời gian; 60 giây đủ cho vài nghìn lượt, không đủ
+#    khi dữ liệu dồn lại sau vài tháng.
+#
+# 3. `client_max_body_size 50m`. Cổng này cũng là nơi nhận span. Một lô span
+#    dồn lại có thể vài chục MB, và nginx từ chối thì SDK bên gửi chỉ thấy
+#    413 rồi lặng lẽ bỏ — mất số liệu mà không ai biết.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name langfuse.nmtung.dev;
+    server_tokens off;
+
+    ssl_certificate /etc/nginx/keys/nginx-selfsigned.crt;
+    ssl_certificate_key /etc/nginx/keys/nginx-selfsigned.key;
+    ssl_session_cache builtin:1000 shared:SSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!eNULL:!EXPORT:!CAMELLIA:!DES:!MD5:!PSK:!RC4;
+    ssl_prefer_server_ciphers on;
+
+    access_log /var/log/nginx/langfuse.access.log;
+    client_max_body_size 50m;
+
+    # ĐỌC KỸ TRƯỚC KHI MỞ RA INTERNET
+    #
+    # Giao diện này đọc được **toàn bộ nội dung prompt của mọi dự án** trong
+    # bản chạy — với AI Nexus nghĩa là tên khách hàng thật và ghi chú nhân
+    # viên gõ vào. Nó không phải một bảng điều khiển hạ tầng vô hại.
+    #
+    # Hai việc tối thiểu:
+    #   a. Đặt AUTH_DISABLE_SIGNUP=true trong .env của Langfuse ngay sau khi
+    #      tạo xong tài khoản đầu tiên. Để false là ai vào được trang cũng tự
+    #      mở tài khoản.
+    #   b. Chặn thêm một lớp nữa. Cloudflare Access là gọn nhất vì Cloudflare
+    #      đã đứng trước rồi. Không dùng thì bỏ chú thích hai dòng dưới và
+    #      điền dải IP của mình — nhớ là nhờ real_ip_header ở khối http,
+    #      $remote_addr đã là IP thật của khách chứ không phải của Cloudflare.
+    #
+    # allow 203.0.113.0/24;
+    # deny all;
+
+    location / {
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+
+        # Xem ghi chú (1) ở đầu khối.
+        proxy_buffering off;
+
+        proxy_connect_timeout 10s;
+        proxy_send_timeout   120s;
+        proxy_read_timeout   120s;
+        proxy_pass http://langfuse;
     }
 }
