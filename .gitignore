@@ -7,3 +7,6 @@ dist
 
 # Internal planning notes, not published
 docs/
+
+# Bản kết xuất cơ sở dữ liệu, do ./deploy.sh backup ghi ra.
+backups/

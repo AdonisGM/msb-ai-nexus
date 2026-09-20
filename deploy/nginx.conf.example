@@ -1,0 +1,78 @@
+# Reverse proxy cho hai tên miền, đặt trên VPS.
+#
+#   nexus.nmtung.dev      → cổng 4510, trang web tĩnh
+#   api-nexus.nmtung.dev  → cổng 4511, API
+#
+# Chép vào /etc/nginx/sites-available/nexus rồi nối sang sites-enabled, hoặc
+# đặt thẳng vào /etc/nginx/conf.d/nexus.conf tuỳ bản phân phối.
+#
+# Chứng chỉ thì để certbot tự thêm vào tệp này:
+#
+#   certbot --nginx -d nexus.nmtung.dev -d api-nexus.nmtung.dev
+#
+# Hai tên miền là hai máy chủ ảo riêng chứ không gộp một tên rồi tách bằng
+# /api. Lý do: ảnh web nướng cứng VITE_API_BASE lúc build, nên đường dẫn API
+# phải cố định từ trước — và tách theo tên miền thì đổi bên nào cũng không
+# đụng bên kia.
+
+server {
+  listen 80;
+  listen [::]:80;
+  server_name nexus.nmtung.dev api-nexus.nmtung.dev;
+
+  # certbot cần đường này mở trên cổng 80 để gia hạn chứng chỉ.
+  location /.well-known/acme-challenge/ { root /var/www/html; }
+  location / { return 301 https://$host$request_uri; }
+}
+
+server {
+  listen 443 ssl;
+  listen [::]:443 ssl;
+  http2 on;
+  server_name nexus.nmtung.dev;
+
+  # certbot điền ssl_certificate / ssl_certificate_key vào đây.
+
+  server_tokens off;
+  # Bundle web có tệp đã nén sẵn, nhưng index.html thì không — bật gzip cho
+  # phần còn lại.
+  gzip on;
+  gzip_types text/css application/javascript application/json image/svg+xml;
+  gzip_min_length 1024;
+
+  location / {
+    proxy_pass http://127.0.0.1:4510;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+}
+
+server {
+  listen 443 ssl;
+  listen [::]:443 ssl;
+  http2 on;
+  server_name api-nexus.nmtung.dev;
+
+  server_tokens off;
+
+  # Hồ sơ khách hàng và tệp tải lên có thể lớn hơn mặc định 1M của nginx.
+  client_max_body_size 25m;
+
+  location / {
+    proxy_pass http://127.0.0.1:4511;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # Cookie phiên đi qua đây. Không đụng vào Set-Cookie: API tự gắn Secure vì
+    # WEB_ORIGIN trên máy chủ là https, và tự gắn SameSite=Lax. Hai tên miền
+    # cùng nằm dưới nmtung.dev nên trình duyệt coi là same-site, cookie vẫn
+    # được gửi kèm lời gọi từ trang web sang API.
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_read_timeout 120s;
+  }
+}

@@ -1,0 +1,15 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+.env
+**/.env
+**/.env.local
+*.log
+*.tsbuildinfo
+.DS_Store
+
+# Tài liệu đề bài và trao đổi nội bộ. Ảnh được đẩy lên registry ở xa, và
+# không có lý do gì để chúng đi cùng.
+docs/

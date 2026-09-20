@@ -1,0 +1,78 @@
+# Bản chạy ở máy chủ. Chỉ kéo ảnh từ registry, không dựng gì.
+#
+# Máy chủ chỉ cần đúng ba tệp: docker-compose.prod.yml, .env và deploy.sh.
+# Không cần mã nguồn, không cần cài Node hay pnpm.
+#
+#   ./deploy.sh pull && ./deploy.sh up
+#
+# Ba cổng 4510 4511 4513 mặc định chỉ mở cho chính máy chủ, để reverse proxy
+# đứng trước chuyển tiếp vào. Muốn phơi thẳng ra mạng thì đặt BIND_ADDR=0.0.0.0
+# trong .env — nhưng khi đó không còn HTTPS, và cookie phiên đăng nhập gắn cờ
+# Secure sẽ không bao giờ tới được trình duyệt.
+
+name: nexus
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: nexus-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?thiếu POSTGRES_PASSWORD trong .env}
+      POSTGRES_DB: nexus
+    # Mở ra cho chính máy chủ, không ra ngoài. Nối từ máy khác thì dựng đường
+    # hầm SSH:  ssh -L 5433:127.0.0.1:4513 server
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${PORT_DB:-4513}:5432"
+    volumes:
+      - nexus-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexus"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    image: ${REGISTRY:?thiếu REGISTRY}/${IMAGE_NS:?thiếu IMAGE_NS}/api:${TAG:-latest}
+    container_name: nexus-api
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${PORT_API:-4511}:3000"
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://nexus:${POSTGRES_PASSWORD}@db:5432/nexus
+      # Tên miền của TRANG WEB, không phải của API. Cookie phiên chỉ đi được
+      # khi origin gọi đến khớp giá trị này.
+      WEB_ORIGIN: ${WEB_ORIGIN:?thiếu WEB_ORIGIN}
+      COOKIE_NAME: ${COOKIE_NAME:-nexus_session}
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
+      IDLE_TIMEOUT_MINUTES: ${IDLE_TIMEOUT_MINUTES:-0}
+      # Mật khẩu chung của các tài khoản demo, chỉ script seed đọc tới.
+      SEED_PASSWORD: ${SEED_PASSWORD:-}
+      # Bỏ trống được cho tới khi dựng phần AI. Thiếu thì các màn còn lại chạy
+      # bình thường, chỉ riêng phần gợi ý là chưa cấu hình.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_MODE: ${AI_MODE:-live}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/public/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+
+  web:
+    # Ảnh này đã nướng sẵn VITE_API_BASE và số phiên bản lúc build, nên nó chỉ
+    # chạy đúng với tên miền đã dựng cho. Đổi tên miền API là phải build và đẩy
+    # lại ảnh web, không sửa được bằng biến môi trường ở đây.
+    image: ${REGISTRY}/${IMAGE_NS}/web:${TAG:-latest}
+    container_name: nexus-web
+    restart: unless-stopped
+    depends_on: [api]
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${PORT_WEB:-4510}:80"
+
+volumes:
+  nexus-pgdata:
