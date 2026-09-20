@@ -47,6 +47,9 @@ services:
       # Tên miền của TRANG WEB, không phải của API. Cookie phiên chỉ đi được
       # khi origin gọi đến khớp giá trị này.
       WEB_ORIGIN: ${WEB_ORIGIN:?thiếu WEB_ORIGIN}
+      # Có nginx đứng trước nên phải tin đúng một hop, không thì mọi phiên
+      # đăng nhập đều ghi cùng một địa chỉ IP của proxy.
+      TRUST_PROXY: ${TRUST_PROXY:-1}
       COOKIE_NAME: ${COOKIE_NAME:-nexus_session}
       SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
       IDLE_TIMEOUT_MINUTES: ${IDLE_TIMEOUT_MINUTES:-0}

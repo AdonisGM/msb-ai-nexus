@@ -2,16 +2,20 @@ import './env'
 
 import { ValidationPipe } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
+import type { NestExpressApplication } from '@nestjs/platform-express'
 import cookieParser from 'cookie-parser'
 import helmet from 'helmet'
 import { AppModule } from './app.module'
 import { runMigrations } from './db/migrate'
-import { PORT, WEB_ORIGIN } from './env'
+import { PORT, TRUST_PROXY, WEB_ORIGIN } from './env'
 
 async function bootstrap() {
   await runMigrations()
 
-  const app = await NestFactory.create(AppModule)
+  const app = await NestFactory.create<NestExpressApplication>(AppModule)
+
+  /** Behind nginx in production, nothing in development. */
+  if (TRUST_PROXY > 0) app.set('trust proxy', TRUST_PROXY)
 
   app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false }))
   app.use(cookieParser())

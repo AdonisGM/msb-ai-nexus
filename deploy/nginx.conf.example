@@ -1,78 +1,141 @@
-# Reverse proxy cho hai tên miền, đặt trên VPS.
+# Nexus — THÊM cạnh cấu hình đang chạy, không thay thế nó.
 #
-#   nexus.nmtung.dev      → cổng 4510, trang web tĩnh
-#   api-nexus.nmtung.dev  → cổng 4511, API
+# Đặt thành một tệp riêng, ví dụ /etc/nginx/conf.d/nexus.conf. An toàn vì hai
+# tên miền dưới đây không trùng tên nào trong cấu hình home. Nếu có trùng thì
+# `nginx -t` vẫn báo thành công và chỉ ghi một dòng "conflicting server name",
+# rồi tệp nào nạp trước thì thắng — mọi thứ trông vẫn xanh trong khi tên miền
+# trỏ sai chỗ.
 #
-# Chép vào /etc/nginx/sites-available/nexus rồi nối sang sites-enabled, hoặc
-# đặt thẳng vào /etc/nginx/conf.d/nexus.conf tuỳ bản phân phối.
+# KHÔNG khai default_server ở đây. Cấu hình home đã có một cặp trả 444 cho mọi
+# tên miền lạ; thêm cặp nữa là `nginx -t` báo "duplicate default server" và
+# nginx không khởi động lại được.
 #
-# Chứng chỉ thì để certbot tự thêm vào tệp này:
+# Bố cục giống home: Cloudflare đứng trước và lo chứng chỉ thật cho trình
+# duyệt, nginx ở đây dùng chứng chỉ tự ký cho chặng Cloudflare ↔ máy chủ. Ở
+# Cloudflare để chế độ "Full", KHÔNG phải "Full (strict)".
 #
-#   certbot --nginx -d nexus.nmtung.dev -d api-nexus.nmtung.dev
+# Hai container nghe trên 127.0.0.1 cổng 4510 và 4511.
 #
-# Hai tên miền là hai máy chủ ảo riêng chứ không gộp một tên rồi tách bằng
-# /api. Lý do: ảnh web nướng cứng VITE_API_BASE lúc build, nên đường dẫn API
-# phải cố định từ trước — và tách theo tên miền thì đổi bên nào cũng không
-# đụng bên kia.
+# Không có khối map $http_upgrade, và không cần: web là trang tĩnh do nginx
+# trong container phục vụ, API là REST thuần. Không chỗ nào dùng WebSocket.
 
+# ── IP thật của khách ───────────────────────────────────────────────────────
+# Lặp lại dải Cloudflare dù cấu hình home đã khai, vì hai tệp cùng nằm trong
+# khối http và directive này cộng dồn chứ không đè nhau — lặp thì vô hại, còn
+# dựa vào tệp kia thì ngày nào đó gỡ home ra là nexus mất IP thật mà không báo.
+#
+# Danh sách gốc ở cloudflare.com/ips-v4 và /ips-v6.
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 131.0.72.0/22;
+set_real_ip_from 2400:cb00::/32;
+set_real_ip_from 2606:4700::/32;
+set_real_ip_from 2803:f800::/32;
+set_real_ip_from 2405:b500::/32;
+set_real_ip_from 2405:8100::/32;
+set_real_ip_from 2a06:98c0::/29;
+set_real_ip_from 2c0f:f248::/32;
+real_ip_header CF-Connecting-IP;
+
+# ── Upstream ────────────────────────────────────────────────────────────────
+upstream nexus_web { zone nexus_web 64k; server 127.0.0.1:4510; keepalive 2; }
+upstream nexus_api { zone nexus_api 64k; server 127.0.0.1:4511; keepalive 2; }
+
+# Tệp này tự chứa, không include snippet nào. Lặp lại tám dòng header proxy hai
+# lần rẻ hơn nhiều so với việc quên chép một snippet lên rồi nginx không khởi
+# động lại được.
+
+# ── Đưa về HTTPS ────────────────────────────────────────────────────────────
 server {
-  listen 80;
-  listen [::]:80;
-  server_name nexus.nmtung.dev api-nexus.nmtung.dev;
-
-  # certbot cần đường này mở trên cổng 80 để gia hạn chứng chỉ.
-  location /.well-known/acme-challenge/ { root /var/www/html; }
-  location / { return 301 https://$host$request_uri; }
+    listen 80;
+    listen [::]:80;
+    server_name nexus.nmtung.dev api-nexus.nmtung.dev;
+    return 301 https://$host$request_uri;
 }
 
+# ── Trang web ───────────────────────────────────────────────────────────────
 server {
-  listen 443 ssl;
-  listen [::]:443 ssl;
-  http2 on;
-  server_name nexus.nmtung.dev;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name nexus.nmtung.dev;
+    server_tokens off;
 
-  # certbot điền ssl_certificate / ssl_certificate_key vào đây.
+    ssl_certificate /etc/nginx/keys/nginx-selfsigned.crt;
+    ssl_certificate_key /etc/nginx/keys/nginx-selfsigned.key;
+    ssl_session_cache builtin:1000 shared:SSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!eNULL:!EXPORT:!CAMELLIA:!DES:!MD5:!PSK:!RC4;
+    ssl_prefer_server_ciphers on;
 
-  server_tokens off;
-  # Bundle web có tệp đã nén sẵn, nhưng index.html thì không — bật gzip cho
-  # phần còn lại.
-  gzip on;
-  gzip_types text/css application/javascript application/json image/svg+xml;
-  gzip_min_length 1024;
+    access_log /var/log/nginx/nexus-web.access.log;
+    client_max_body_size 2m;
 
-  location / {
-    proxy_pass http://127.0.0.1:4510;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-  }
+    location / {
+        # X-Forwarded-For đặt bằng $remote_addr chứ không phải
+        # $proxy_add_x_forwarded_for: nhờ real_ip_header ở trên, $remote_addr
+        # đã là IP thật của khách. Dùng $proxy_add_ thì nó nối thêm cả chuỗi
+        # khách tự gửi lên, mà .env để TRUST_PROXY=1 nghĩa là API chỉ bỏ qua
+        # đúng một hop — khách sẽ tự khai được địa chỉ của mình.
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+        proxy_pass http://nexus_web;
+    }
 }
 
+# ── API ─────────────────────────────────────────────────────────────────────
 server {
-  listen 443 ssl;
-  listen [::]:443 ssl;
-  http2 on;
-  server_name api-nexus.nmtung.dev;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name api-nexus.nmtung.dev;
+    server_tokens off;
 
-  server_tokens off;
+    ssl_certificate /etc/nginx/keys/nginx-selfsigned.crt;
+    ssl_certificate_key /etc/nginx/keys/nginx-selfsigned.key;
+    ssl_session_cache builtin:1000 shared:SSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!eNULL:!EXPORT:!CAMELLIA:!DES:!MD5:!PSK:!RC4;
+    ssl_prefer_server_ciphers on;
 
-  # Hồ sơ khách hàng và tệp tải lên có thể lớn hơn mặc định 1M của nginx.
-  client_max_body_size 25m;
+    access_log /var/log/nginx/nexus-api.access.log;
+    client_max_body_size 8m;
 
-  location / {
-    proxy_pass http://127.0.0.1:4511;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
+    # KHÔNG thêm header CORS ở đây. API tự đặt chúng theo đúng WEB_ORIGIN
+    # trong .env. Nginx thêm một bộ nữa thì trình duyệt thấy hai dòng
+    # Access-Control-Allow-Origin và chặn cả lượt gọi. Trả sẵn 204 cho OPTIONS
+    # còn tệ hơn: preflight không bao giờ tới được API, nên phần kiểm origin
+    # thật sự không chạy nữa và mọi trang web đều vượt qua được vòng đầu.
+    #
+    # Cookie phiên cũng không đụng vào. Hai tên miền cùng nằm dưới nmtung.dev
+    # nên trình duyệt coi là same-site và SameSite=Lax vẫn cho cookie đi kèm
+    # lời gọi từ nexus sang api-nexus.
 
-    # Cookie phiên đi qua đây. Không đụng vào Set-Cookie: API tự gắn Secure vì
-    # WEB_ORIGIN trên máy chủ là https, và tự gắn SameSite=Lax. Hai tên miền
-    # cùng nằm dưới nmtung.dev nên trình duyệt coi là same-site, cookie vẫn
-    # được gửi kèm lời gọi từ trang web sang API.
-    proxy_http_version 1.1;
-    proxy_set_header Connection "";
-    proxy_read_timeout 120s;
-  }
+    location / {
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+        proxy_pass http://nexus_api;
+    }
 }
