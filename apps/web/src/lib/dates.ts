@@ -100,3 +100,30 @@ export function daysUntil(due: string | null | undefined, now = new Date()): num
   const b = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())
   return Math.round((a - b) / 86_400_000)
 }
+
+/** How many whole days ago something happened, or null if it never did.
+ *
+ *  The mirror of `daysUntil`, and compared the same way — by calendar day
+ *  rather than by subtracting timestamps. "3 ngày trước" has to mean the same
+ *  thing at nine in the morning and at eleven at night, or a list re-sorts
+ *  itself over lunch.
+ *
+ *  Null is not zero and must not be rendered as one: "chưa bao giờ có tin" is
+ *  a louder version of the same worry as "ba tuần không có tin". */
+export function daysSince(at: string | Date | null | undefined, now = new Date()): number | null {
+  const days = daysUntil(typeof at === 'string' || !at ? at : at.toISOString(), now)
+  return days === null ? null : Math.max(0, -days)
+}
+
+/** Day and month only, `22.09`.
+ *
+ *  For table columns where the year is noise: everything on a working list is
+ *  this year, and four extra characters per row across seven columns is what
+ *  turns a scannable table into a wall. The full date stays on the detail
+ *  screen, where somebody is reading one record rather than comparing twenty. */
+export function dmDate(value: string | Date | null | undefined): string {
+  if (!value) return '—'
+  const date = typeof value === 'string' ? new Date(value) : value
+  if (Number.isNaN(date.getTime())) return '—'
+  return `${String(date.getDate()).padStart(2, '0')}.${String(date.getMonth() + 1).padStart(2, '0')}`
+}

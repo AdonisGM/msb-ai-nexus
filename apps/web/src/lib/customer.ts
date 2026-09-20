@@ -44,5 +44,8 @@ export const SEGMENT_KEYS: Record<'sse' | 'rb', string[]> = {
  *  without anyone reading the column. */
 export const SEGMENT_TONE: Record<'sse' | 'rb', { fg: string; bg: string }> = {
   sse: { fg: 'var(--info)', bg: 'var(--info-soft)' },
-  rb: { fg: 'var(--success)', bg: 'var(--success-soft)' },
+  /** Not green. Green means "won" on every other badge in this app, and a
+   *  segment that borrowed it would read as an outcome on a row that also
+   *  carries a real one. */
+  rb: { fg: 'var(--pending)', bg: 'var(--pending-soft)' },
 }

@@ -1,11 +1,4 @@
-import {
-  Building2,
-  ClipboardList,
-  Gauge,
-  Target,
-  Users,
-  type LucideIcon,
-} from 'lucide-react'
+import { ClipboardList, Gauge, LayoutDashboard, Users, type LucideIcon } from 'lucide-react'
 import type { Me } from '~/api/auth'
 import type { DictKey } from '~/i18n'
 
@@ -43,16 +36,14 @@ export const NAV: NavItem[] = [
     roles: ['sale', 'team_lead', 'bm', 'admin'],
   },
   {
-    key: 'nav.unit',
-    to: '/unit',
-    icon: Building2,
-    roles: ['bm', 'admin'],
-  },
-  {
-    key: 'nav.targets',
-    to: '/targets',
-    icon: Target,
-    roles: ['sale', 'team_lead', 'bm', 'admin'],
+    /** One screen for the two roles that read rather than work: a team lead
+     *  chasing their people and a branch manager reading the unit. They ask
+     *  different questions of the same figures, which is a difference in what
+     *  the rows are grouped by, not a reason for two screens. */
+    key: 'nav.dashboard',
+    to: '/dashboard',
+    icon: LayoutDashboard,
+    roles: ['team_lead', 'bm'],
   },
 ]
 

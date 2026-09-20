@@ -48,11 +48,18 @@ function SignalRow({ signal, last }: { signal: Signal; last: boolean }) {
             {tCode('signal', signal.type, signal.type)}
           </Chip>
           <Caption>{vnDate(signal.observedAt)}</Caption>
-          {/** Only worth saying when it was not a person: everything else came
-            *  from the salesperson, which is the assumption anyway. */}
-          {signal.source !== 'sale' ? (
-            <Caption>· {signal.source === 'ai' ? 'AI ghi nhận' : 'Hệ thống'}</Caption>
-          ) : null}
+          {/** Who put it there. A name where a person did, the source alone
+            *  where the system or the model did — inventing an author for a
+            *  machine-written row is exactly the confusion the two-colour
+            *  split elsewhere exists to prevent. */}
+          <Caption>
+            ·{' '}
+            {signal.source === 'sale'
+              ? `Sale ghi${signal.authorName ? `, ${signal.authorName}` : ''}`
+              : signal.source === 'ai'
+                ? 'Máy đề xuất'
+                : 'Hệ thống ghi'}
+          </Caption>
         </div>
 
         <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink2">{signal.content}</p>

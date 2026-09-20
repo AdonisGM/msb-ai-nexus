@@ -1,29 +1,25 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import {
-  BLOCKER_CODES,
-  STAGES,
-  STAGE_WIN_PROBABILITY,
-  createOpportunity,
-} from '~/api/opportunities'
+import { BLOCKER_CODES, PRODUCTS, createOpportunity, type Product } from '~/api/opportunities'
 import { inputBase } from '~/components/ui/form-controls'
 import { Modal } from '~/components/ui/modal'
 import { Button, cx } from '~/components/ui/primitives'
-import { t, tCode } from '~/i18n'
+import { t } from '~/i18n'
 import { useWriteError } from '~/lib/use-write-error'
 import { fmtMoney } from '~/lib/format'
 
-/** Opening a new deal on a customer.
+/** Opening a new lead on a customer.
  *
  *  Kept to what a salesperson knows coming out of a meeting: what they are
- *  selling, why, how much and by when. Everything else the deal will collect —
- *  the blocker, the missing information, who it is waiting on — arrives as the
- *  deal moves, and asking for it up front just produces guesses.
+ *  selling, why, how much and by when. Everything the lead will collect as it
+ *  moves — where it got stuck, what is missing — arrives later, and asking for
+ *  it up front just produces guesses.
  *
- *  It opens in the salesperson's own draft, invisible to their team lead until
- *  they confirm it. That is the point of the first gate: a half-written deal
- *  is not a report. */
+ *  There is no funnel step to choose. Every lead starts untouched however it
+ *  arrived, because typing one in is not the same as having called it, and a
+ *  form that let somebody claim otherwise would put a fiction straight into
+ *  the one figure the branch is judged on. */
 export function OpportunityForm({
   customerId,
   open,
@@ -36,26 +32,22 @@ export function OpportunityForm({
   const queryClient = useQueryClient()
   const onWriteError = useWriteError()
 
-  const [product, setProduct] = useState('')
+  const [product, setProduct] = useState<Product>('loan')
   const [need, setNeed] = useState('')
   const [value, setValue] = useState('')
-  const [stage, setStage] = useState<string>('prospecting')
   const [dueDate, setDueDate] = useState('')
+  const [nextAction, setNextAction] = useState('')
   const [blockerCode, setBlockerCode] = useState('')
   const [blockerNote, setBlockerNote] = useState('')
 
-  /** Shown before saving rather than appearing afterwards. The figure drives
-   *  the branch manager's forecast, so someone entering a deal should see what
-   *  they are adding to it. */
-  const probability = STAGE_WIN_PROBABILITY[stage] ?? 10
-  const amount = Number(value.replace(/\D/g, '')) || 0
+  const amount = Number(value.replace(/[^0-9]/g, '')) || 0
 
   function reset() {
-    setProduct('')
+    setProduct('loan')
     setNeed('')
     setValue('')
-    setStage('prospecting')
     setDueDate('')
+    setNextAction('')
     setBlockerCode('')
     setBlockerNote('')
   }
@@ -64,16 +56,19 @@ export function OpportunityForm({
     mutationFn: () =>
       createOpportunity({
         customerId,
-        product: product.trim(),
+        product,
         need: need.trim(),
         value: amount,
-        stage,
         dueDate: dueDate || undefined,
+        nextAction: nextAction.trim() || undefined,
         blockerCode: blockerCode || undefined,
         blockerNote: blockerNote.trim() || undefined,
       }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['opportunities'] }),
+        queryClient.invalidateQueries({ queryKey: ['customers'] }),
+      ])
       toast.success(t('opportunities.created'))
       reset()
       onClose()
@@ -81,8 +76,7 @@ export function OpportunityForm({
     onError: (error) => void onWriteError(error, '/customers'),
   })
 
-  const ready =
-    product.trim().length > 0 && need.trim().length > 0 && amount > 0 && !save.isPending
+  const ready = need.trim().length > 0 && amount > 0 && !save.isPending
 
   return (
     <Modal
@@ -105,21 +99,38 @@ export function OpportunityForm({
         </>
       }
     >
-      <Field label={t('field.product')} required>
-        <input
-          id="product"
-          value={product}
-          autoFocus
-          onChange={(event) => setProduct(event.target.value)}
-          placeholder="Vay mua bất động sản"
-          className={inputBase}
-        />
-      </Field>
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[11px] text-muted">
+          {t('field.product')}
+          <span className="ml-1 text-[var(--warn)]">*</span>
+        </span>
+        {/** A closed set, because the branch report is one column per product.
+          *  Free text here would put "Thẻ TD" and "Thẻ tín dụng" into two
+          *  different columns of the same table. */}
+        <div className="flex flex-wrap gap-1.5">
+          {PRODUCTS.map((id) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setProduct(id)}
+              className={cx(
+                'rounded-md border px-2.5 py-1.5 text-[11.5px] transition-colors',
+                id === product
+                  ? 'border-accent bg-accent-soft text-ink'
+                  : 'border-line2 text-muted hover:text-ink',
+              )}
+            >
+              {t(`product.${id}`)}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <Field label={t('field.need')} required>
         <input
           id="need"
           value={need}
+          autoFocus
           onChange={(event) => setNeed(event.target.value)}
           placeholder="Mua căn hộ, cần giải ngân trước hạn hợp đồng"
           className={inputBase}
@@ -152,31 +163,15 @@ export function OpportunityForm({
         </Field>
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <span className="text-[11px] text-muted">
-          {t('field.stage')}
-          {/** The probability follows the stage, so the consequence of the
-            *  choice is visible while it is being made. */}
-          <span className="ml-2 font-mono text-muted">· {probability}%</span>
-        </span>
-        <div className="flex flex-wrap gap-1.5">
-          {STAGES.map((id) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setStage(id)}
-              className={cx(
-                'rounded-md border px-2.5 py-1.5 text-[11.5px] transition-colors',
-                id === stage
-                  ? 'border-accent bg-accent-soft text-ink'
-                  : 'border-line2 text-muted hover:text-ink',
-              )}
-            >
-              {tCode('stage', id, id)}
-            </button>
-          ))}
-        </div>
-      </div>
+      <Field label={t('field.nextAction')}>
+        <input
+          id="nextAction"
+          value={nextAction}
+          onChange={(event) => setNextAction(event.target.value)}
+          placeholder="Gọi lại xác nhận nhu cầu, gửi bảng lãi suất"
+          className={inputBase}
+        />
+      </Field>
 
       <div className="flex flex-col gap-1.5">
         <span className="text-[11px] text-muted">
@@ -187,9 +182,9 @@ export function OpportunityForm({
             <button
               key={id}
               type="button"
-              /** Tapping the chosen one again clears it. A deal with nothing
-                *  in its way is the normal case, and a picker with no way back
-                *  to "none" forces a blocker onto every deal. */
+              /** Tapping the chosen one again clears it. A lead with nothing in
+                *  its way is the normal case, and a picker with no way back to
+                *  "none" forces a blocker onto every one of them. */
               onClick={() => setBlockerCode((current) => (current === id ? '' : id))}
               className={cx(
                 'rounded-md border px-2.5 py-1.5 text-[11.5px] transition-colors',
@@ -198,7 +193,7 @@ export function OpportunityForm({
                   : 'border-line2 text-muted hover:text-ink',
               )}
             >
-              {tCode('blocker', id, id)}
+              {t(`blocker.${id}`)}
             </button>
           ))}
         </div>

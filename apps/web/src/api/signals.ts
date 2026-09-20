@@ -24,6 +24,10 @@ export type Signal = {
   source: 'sale' | 'system' | 'ai'
   observedAt: string
   authorId: string | null
+  /** Who wrote it, by name. Null where the system or the model did, and the
+   *  timeline then shows the source alone rather than inventing an author. */
+  authorName: string | null
+  authorRole: string | null
   rawNote: string | null
   createdAt: string
 }

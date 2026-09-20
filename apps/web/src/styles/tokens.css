@@ -74,6 +74,26 @@
   --danger-soft: #f5edec;
   --info: #3a5f86;
   --info-soft: #eaeff5;
+
+  /* Màu để tô, khác màu để đọc.
+     Các biến trên được chọn để đọc thành chữ; tô thành lát bánh thì đục và
+     bốn lát cạnh nhau khó phân biệt. Bộ --c-* chỉ dùng cho mảng tô: lát biểu
+     đồ, chấm chú giải, thanh tiến độ. Không bao giờ dùng làm màu chữ.
+
+     Độ sáng đi ngược nền: nền sáng thì tô đậm lại, nền tối thì tô sáng lên.
+     Cùng một giá trị cho cả hai theme nghĩa là một trong hai luôn bị chìm. */
+  --c-info: oklch(0.56 0.15 245);
+  --c-success: oklch(0.58 0.14 158);
+  --c-warn: oklch(0.66 0.15 72);
+  --c-danger: oklch(0.56 0.18 26);
+  --c-pending: oklch(0.56 0.17 300);
+
+  /* Xám trung tính, cho phần "chưa có gì xảy ra".
+     Nó thường là lát to nhất trên donut, nên phải lùi về sau chứ không tranh
+     chỗ với ba màu mang thông tin — mắt cần đi tới phần có nghĩa trước. Bám
+     theo nền: xám trắng trên nền sáng, xám đậm trên nền tối. Vẫn phải hơn
+     --sunken một bậc, nếu không lát ấy biến mất vào chính rãnh chứa nó. */
+  --c-neutral: #c9cdd2;
   --tip-bg: #111315;
   --tip-fg: #f1f2f3;
 
@@ -116,6 +136,13 @@
   --danger-soft: rgba(208, 130, 117, 0.14);
   --info: #7aa0cc;
   --info-soft: rgba(122, 160, 204, 0.14);
+
+  --c-info: oklch(0.70 0.14 245);
+  --c-success: oklch(0.74 0.14 158);
+  --c-warn: oklch(0.80 0.13 72);
+  --c-danger: oklch(0.70 0.16 26);
+  --c-pending: oklch(0.72 0.15 300);
+  --c-neutral: #3d4247;
   --tip-bg: #eef0f2;
   --tip-fg: #141617;
 

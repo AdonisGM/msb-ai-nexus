@@ -29,6 +29,10 @@ export type TableState<F> = {
   set: <K extends keyof F>(key: K, value: F[K]) => void
   /** Cắt đúng trang đang xem, dùng cho bảng còn chia trang tại chỗ. */
   slice: <T>(rows: T[]) => T[]
+  /** Đưa mọi ô lọc về mặc định và quay lại trang đầu. Nút "Bỏ lọc" của bảng
+   *  nào cũng làm đúng việc này, và bảng nào tự làm lấy thì sớm muộn quên
+   *  setPage(1) rồi rơi vào một trang trống. */
+  reset: () => void
   /** Các cỡ trang bảng này cho chọn: ba cỡ chuẩn, cộng cỡ riêng của nó nếu có.
    *
    *  Cố định theo bảng, không đổi theo cỡ đang dùng. Tính từ cỡ hiện tại thì ô
@@ -58,6 +62,15 @@ export function useTableState<F extends Record<string, unknown>>(
     setPage(1)
   }, [])
 
+  const reset = useCallback(() => {
+    setFilters(initialFilters)
+    setPage(1)
+    /** Ô lọc ban đầu thường là một literal viết thẳng ở chỗ gọi, nên mỗi lần
+     *  render là một object mới. Phụ thuộc vào nó thì gõ một phím là bảng tự
+     *  reset. */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   /** Đổi cỡ trang cũng về trang đầu: trang 12 của cỡ 25 không có nghĩa gì khi
    *  chuyển sang cỡ 100. */
   const setSize = useCallback((n: number) => {
@@ -82,8 +95,8 @@ export function useTableState<F extends Record<string, unknown>>(
   )
 
   return useMemo(
-    () => ({ page, size, filters, setPage, setSize, set, slice, sizes }),
-    [page, size, filters, set, setSize, slice, sizes],
+    () => ({ page, size, filters, setPage, setSize, set, reset, slice, sizes }),
+    [page, size, filters, set, reset, setSize, slice, sizes],
   )
 }
 

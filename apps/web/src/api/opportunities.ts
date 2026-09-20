@@ -1,77 +1,136 @@
 import { queryOptions } from '@tanstack/react-query'
 import { api } from './client'
 
+/** What MSB sells, as the branch report groups it. Closed, because the report
+ *  is literally one column per product. */
+export const PRODUCTS = ['card', 'od', 'usl', 'loan', 'casa', 'insurance', 'other'] as const
+export type Product = (typeof PRODUCTS)[number]
+
+/** The funnel. Three steps, and winning is not a fourth — it is `outcome`,
+ *  and a lead can land straight off a first call without passing through
+ *  `advised`. Keeping the two apart is what lets one screen say "42% đã tư
+ *  vấn" and "11% thắng" about the same rows without the numbers arguing. */
+export const STAGES = ['new', 'contacted', 'advised'] as const
+export type Stage = (typeof STAGES)[number]
+
+export type Outcome = 'open' | 'won' | 'lost'
+
+export const BLOCKER_CODES = [
+  'rate',
+  'speed',
+  'experience',
+  'documents',
+  'collateral',
+  'policy',
+  'competitor',
+  'customer_hesitation',
+  'other',
+] as const
+
+/** One product a deal actually sold. `amount` may be zero — a fee-free card
+ *  is a real sale the branch counts — but never absent. */
+export type SoldProduct = {
+  id: string
+  opportunityId: string
+  product: Product
+  amount: number
+  note: string | null
+}
+
 export type Opportunity = {
   id: string
   code: string
   customerId: string
   segment: 'sse' | 'rb'
-  product: string
+  unitId: string
+  product: Product
   need: string
   value: number
-  stage: string
+
+  stage: Stage
+  contactedAt: string | null
+  advisedAt: string | null
+
+  outcome: Outcome
+  outcomeReason: string | null
+  closedAt: string | null
+
+  /** What a person has checked and stands behind, against what the model
+   *  inferred and nobody has confirmed. Two fields, never one: the screen
+   *  shows them in two colours, and merging them loses the answer to "how do
+   *  you keep a human in control". */
   confirmedData: Record<string, unknown>
   aiHypothesis: Record<string, unknown>
   missingInfo: string[]
+
   blockerCode: string | null
   blockerNote: string | null
   nextAction: string | null
-  nextActionOwnerId: string | null
-  ownerId: string
   dueDate: string | null
-  winProbability: number
-  supportNeeded: string | null
-  bmDecision: string | null
-  approvalStatus: string
-  outcome: 'open' | 'won' | 'lost'
-  outcomeReason: string | null
+
+  ownerId: string
+  source: 'import' | 'manual'
   createdVia: 'manual' | 'ai'
-  draftedAt: string | null
+
+  /** The team lead's reconciliation. Changes no figure on any report — it
+   *  records that a person checked this row against the file. */
+  confirmedById: string | null
   confirmedAt: string | null
-  leadActedAt: string | null
-  bmActedAt: string | null
-  closedAt: string | null
+  confirmNote: string | null
+
   createdAt: string
   updatedAt: string
+
+  /* Joined on the way out, because a UUID cannot be rendered. */
+  customerName: string
+  customerCode: string
+  ownerName: string
+  confirmedByName: string | null
+  /** Who the signature is waiting on. "Đang chờ xác nhận" is a status;
+   *  "Đang chờ Huy xác nhận" is a person to go and ask. */
+  pendingConfirmName: string | null
+  /** When anything last happened to it, for "9 ngày chưa liên hệ". */
+  lastTouchAt: string
+
+  products: SoldProduct[]
+  actions: OfferedAction[]
 }
 
-/** What the signed-in person may press on this deal, and what each press
- *  needs. Comes from the server so the screen never offers a move the server
- *  would then refuse. */
-export type OfferedAction = {
-  action:
-    | 'confirm'
-    | 'view'
-    | 'send_back'
-    | 'coach'
-    | 'escalate'
-    | 'decide'
-    | 'complete'
-    | 'close'
-  requiresReason: boolean
-}
-
-export type OpportunityWithActions = Opportunity & { actions: OfferedAction[] }
+/** What the signed-in person may press, and what each press needs.
+ *
+ *  Comes from the server because permission depends on whether this lead is
+ *  theirs and whether they manage its owner — neither of which the screen
+ *  knows. Working it out here means eventually offering a button the server
+ *  refuses, and a 403 in front of somebody who did nothing wrong. */
+export type ActionName = 'contact' | 'advise' | 'win' | 'lose' | 'confirm' | 'reopen'
+export type OfferedAction = { action: ActionName; requiresReason: boolean }
 
 export type OpportunityPage = {
-  rows: OpportunityWithActions[]
+  rows: Opportunity[]
   total: number
   page: number
   pageSize: number
 }
 
 export type OpportunityQuery = {
+  q?: string
+  blockerCode?: string
   customerId?: string
   segment?: string
   stage?: string
-  approvalStatus?: string
+  outcome?: string
+  product?: string
+  source?: string
   ownerId?: string
   mine?: boolean
+  untouched?: boolean
+  awaitingConfirm?: boolean
+  confirmed?: boolean
+  overdue?: boolean
+  staleDays?: number
+  sort?: 'due' | 'stale' | 'value' | 'recent'
   page?: number
   pageSize?: number
-  /** A branch manager only. `reporting` widens the list to everything that
-   *  feeds the totals; the default is what they can actually act on. */
-  view?: 'reporting' | 'actionable'
 }
 
 function toSearch(query: OpportunityQuery): string {
@@ -92,70 +151,77 @@ export function opportunitiesQuery(query: OpportunityQuery) {
   })
 }
 
-export type ActBody = {
-  reason?: string
-  missingInfo?: string[]
-  nextAction?: string
-  dueDate?: string
-  bmDecision?: string
-  winProbability?: number
-}
-
-export function actOnOpportunity(id: string, action: string, body: ActBody = {}) {
-  return api<Opportunity>(`/opportunities/${id}/actions/${action}`, {
-    method: 'POST',
-    body,
-  })
-}
-
 export type NewOpportunity = {
   customerId: string
-  product: string
+  product: Product
   need: string
   value: number
-  stage?: string
-  winProbability?: number
   dueDate?: string
   blockerCode?: string
   blockerNote?: string
   nextAction?: string
-  supportNeeded?: string
   missingInfo?: string[]
+}
+
+export function opportunityQuery(id: string) {
+  return queryOptions({
+    queryKey: ['opportunities', 'detail', id],
+    queryFn: () => api<Opportunity>(`/opportunities/${id}`),
+  })
+}
+
+/** Everything that has happened to a lead, oldest first.
+ *
+ *  `heldMs` is how long it waited since the previous step, computed at write
+ *  time. It is what turns a list of events into "bốn ngày mới có người gọi". */
+export type HistoryEvent = {
+  id: string
+  seq: number
+  kind:
+    | 'created'
+    | 'assigned'
+    | 'contacted'
+    | 'advised'
+    | 'won'
+    | 'lost'
+    | 'reopened'
+    | 'confirmed'
+    | 'edited'
+  heldMs: number | null
+  changes: Record<string, [unknown, unknown]>
+  reason: string | null
+  createdAt: string
+  actorId: string
+  actorName: string
+  actorRole: string
+}
+
+export function historyQuery(id: string) {
+  return queryOptions({
+    queryKey: ['opportunities', 'history', id],
+    queryFn: () => api<HistoryEvent[]>(`/opportunities/${id}/history`),
+  })
 }
 
 export function createOpportunity(body: NewOpportunity) {
   return api<Opportunity>('/opportunities', { method: 'POST', body })
 }
 
-export const STAGES = [
-  'prospecting',
-  'discovery',
-  'proposal',
-  'negotiation',
-  'documentation',
-  'closing',
-] as const
+export type ActBody = {
+  reason?: string
+  /** Required on `win`, ignored everywhere else. A win that names no product
+   *  lands in the branch total and in none of its columns. */
+  products?: Array<{ product: Product; amount: number; note?: string }>
+  nextAction?: string
+  dueDate?: string
+  blockerCode?: string
+  blockerNote?: string
+  missingInfo?: string[]
+}
 
-export const BLOCKER_CODES = [
-  'rate',
-  'speed',
-  'experience',
-  'documents',
-  'collateral',
-  'policy',
-  'competitor',
-  'customer_hesitation',
-  'other',
-] as const
-
-/** Default conversion chance per stage. Mirrors the server, which applies the
- *  same defaults when the field is left out — shown here so the number is
- *  visible before saving rather than appearing afterwards. */
-export const STAGE_WIN_PROBABILITY: Record<string, number> = {
-  prospecting: 10,
-  discovery: 25,
-  proposal: 50,
-  negotiation: 70,
-  documentation: 85,
-  closing: 100,
+export function actOnOpportunity(id: string, action: ActionName, body: ActBody = {}) {
+  return api<Opportunity>(`/opportunities/${id}/actions/${action}`, {
+    method: 'POST',
+    body,
+  })
 }

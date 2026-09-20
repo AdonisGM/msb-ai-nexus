@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { LogOut, Menu, Moon, Sun, X } from 'lucide-react'
 import { logout, type Me } from '~/api/auth'
 import { Button } from '~/components/ui/primitives'
+import { APP_VERSION } from '~/lib/version'
 import { t } from '~/i18n'
 import { initials } from '~/lib/format'
 import { BrandLockup } from './msb-logo'
@@ -53,7 +54,13 @@ export function AppShell({ user, children }: { user: Me; children: ReactNode }) 
 
       <div className="relative z-[1] flex min-h-0 flex-1">
         <aside className="hidden w-[232px] flex-none border-r border-line bg-surface lg:block">
-          <Nav items={items} onNavigate={() => setMenuOpen(false)} />
+          <div
+            className="sticky flex flex-col"
+            style={{ top: HEADER_H, height: `calc(100vh - ${HEADER_H}px)` }}
+          >
+            <Nav items={items} onNavigate={() => setMenuOpen(false)} />
+            <Footprint />
+          </div>
         </aside>
 
         {/** Under lg the same menu drops out of the bar instead. One list in
@@ -156,10 +163,7 @@ function Nav({
   onNavigate: () => void
 }) {
   return (
-    <nav
-      className="flex flex-col gap-0.5 overflow-y-auto p-3 lg:sticky"
-      style={{ top: HEADER_H, maxHeight: `calc(100vh - ${HEADER_H}px)` }}
-    >
+    <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-3">
       {items.map((item) => (
         <Link
           key={item.to}
@@ -178,6 +182,26 @@ function Nav({
         </Link>
       ))}
     </nav>
+  )
+}
+
+/** Which build is running, at the foot of the column.
+ *
+ *  Baked into the image at build time rather than read from the server: it
+ *  describes the bundle the browser is running, and a version fetched from
+ *  the API would report the API's build while the screen showing it came from
+ *  somewhere else entirely. In development it says `dev`, which is the honest
+ *  answer to "which release is this".
+ *
+ *  Worth the two lines because the first question about any bug report is
+ *  which build it came from, and the person reporting it is looking at this
+ *  screen. */
+function Footprint() {
+  return (
+    <div className="flex flex-none flex-col gap-0.5 border-t border-line px-3.5 py-3 text-[10.5px] text-muted">
+      <span>© {new Date().getFullYear()} MSB AI Nexus</span>
+      <span className="font-mono">Phiên bản {APP_VERSION}</span>
+    </div>
   )
 }
 
