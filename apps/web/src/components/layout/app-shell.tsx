@@ -178,7 +178,10 @@ function Nav({
           className="flex items-center gap-2.5 rounded-[6px] px-2.5 py-2 text-[13px] transition-colors"
         >
           <item.icon size={16} className="shrink-0" />
-          {t(item.key)}
+          <span className="flex-1 truncate">{t(item.key)}</span>
+          {item.hint ? (
+            <span className="flex-none font-mono text-[10px] text-muted">{item.hint}</span>
+          ) : null}
         </Link>
       ))}
     </nav>

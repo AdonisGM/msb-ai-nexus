@@ -1,7 +1,8 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common'
 import { randomUUID } from 'node:crypto'
 import { hash } from 'bcryptjs'
-import { and, asc, count, eq, inArray, ne } from 'drizzle-orm'
+import { and, asc, count, eq, inArray, ne, sql, type SQL } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import { SessionService } from '../auth/session.service'
 import { DB, type Db } from '../db/db.module'
 import { isUniqueViolation } from '../lib/db-errors'
@@ -13,7 +14,7 @@ import {
   type Role,
   type User,
 } from '../db/schema'
-import type { CreateUserDto, SetPasswordDto, UpdateUserDto } from './dto'
+import type { CreateUserDto, ListUsersDto, SetPasswordDto, UpdateUserDto } from './dto'
 
 /** Who each role answers to. The schema only insists that a salesperson or a
  *  team lead has *somebody* above them; this says who, and it is what makes
@@ -120,6 +121,83 @@ export class UsersService {
     }
 
     return roots
+  }
+
+  /** Everybody on the books, flat, for the admin's roster screen.
+   *
+   *  Not the tree: that one is the org chart and deliberately leaves the admin
+   *  out, while this screen has to show them — a roster that cannot see the
+   *  account doing the looking is a roster with a hole in it.
+   *
+   *  The three columns the screen needs and `publicUser` does not carry come
+   *  back here: an email to write to, a number to ring, and when they were
+   *  last seen. `lastLoginAt` is the one that earns its place — it is how an
+   *  admin finds the accounts nobody has ever used. */
+  async list(query: ListUsersDto = {}) {
+    const manager = alias(users, 'manager')
+
+    const parts: SQL[] = []
+    if (query.role) parts.push(eq(users.role, query.role))
+    if (query.active !== undefined) parts.push(eq(users.active, query.active))
+    if (query.q) {
+      const like = `%${query.q}%`
+      parts.push(
+        sql`(unaccent(${users.name}) ilike unaccent(${like})
+             or ${users.code} ilike ${like}
+             or ${users.employeeCode} ilike ${like}
+             or coalesce(${users.email}, '') ilike ${like}
+             or replace(coalesce(${users.phone}, ''), ' ', '') ilike replace(${like}, ' ', ''))`,
+      )
+    }
+
+    const rows = await this.db
+      .select({
+        id: users.id,
+        code: users.code,
+        employeeCode: users.employeeCode,
+        name: users.name,
+        email: users.email,
+        phone: users.phone,
+        role: users.role,
+        title: users.title,
+        level: users.level,
+        segment: users.segment,
+        managerId: users.managerId,
+        managerName: manager.name,
+        active: users.active,
+        lastLoginAt: users.lastLoginAt,
+      })
+      .from(users)
+      .leftJoin(manager, eq(manager.id, users.managerId))
+      .where(parts.length > 0 ? and(...parts) : undefined)
+      /** Branch manager, then team leads, then salespeople, then the admin —
+       *  the order somebody reads an organisation in. `sort` and the name
+       *  break the ties so two reads never disagree. */
+      .orderBy(sql`array_position(array['bm','team_lead','sale','admin'], ${users.role})`,
+        asc(users.sort), asc(users.name))
+
+    /** Counted across everybody, not across the filter: the four figures above
+     *  the table describe the branch, and a headcount that changed every time
+     *  somebody typed in the search box would be answering a different
+     *  question than the one its label asks. */
+    const [totals] = await this.db
+      .select({
+        total: count(),
+        active: sql<number>`count(*) filter (where ${users.active})`,
+        locked: sql<number>`count(*) filter (where not ${users.active})`,
+        admins: sql<number>`count(*) filter (where ${users.role} = 'admin')`,
+      })
+      .from(users)
+
+    return {
+      rows,
+      summary: {
+        total: Number(totals?.total ?? 0),
+        active: Number(totals?.active ?? 0),
+        locked: Number(totals?.locked ?? 0),
+        admins: Number(totals?.admins ?? 0),
+      },
+    }
   }
 
   async get(id: string): Promise<User> {

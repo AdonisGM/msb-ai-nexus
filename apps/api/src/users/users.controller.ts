@@ -6,13 +6,14 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common'
 import { AuthGuard, type AuthedRequest } from '../auth/auth.guard'
 import { Roles, RolesGuard } from '../auth/roles.guard'
 import { publicUser } from '../auth/auth.controller'
-import { CreateUserDto, SetPasswordDto, UpdateUserDto } from './dto'
+import { CreateUserDto, ListUsersDto, SetPasswordDto, UpdateUserDto } from './dto'
 import { UsersService } from './users.service'
 
 @Controller('users')
@@ -26,6 +27,16 @@ export class UsersController {
   @Get('tree')
   tree(@Req() req: AuthedRequest) {
     return this.users.tree(req.user!)
+  }
+
+  /** The roster. Admin only, like everything below it.
+   *
+   *  Declared before `:id` so the router does not read the empty path as a
+   *  customer id — same reason `facets` sits above `:id` on customers. */
+  @Get()
+  @Roles('admin')
+  list(@Query() query: ListUsersDto) {
+    return this.users.list(query)
   }
 
   /** Everything below is the admin's. Managing accounts is not a sales job,

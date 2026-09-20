@@ -27,6 +27,25 @@ const upper = ({ value }: { value: unknown }) =>
  *  handed out in person for a trial run and then changed. */
 const MIN_PASSWORD = 8
 
+export class ListUsersDto {
+  /** Name, either code, email or phone. The phone comparison strips spaces on
+   *  both sides, because nobody types a number the same way twice. */
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(100)
+  q?: string
+
+  @IsOptional()
+  @IsIn(ROLES)
+  role?: string
+
+  @IsOptional()
+  @Transform(({ value }) => (value === undefined || value === '' ? undefined : value === 'true' || value === true))
+  @IsBoolean()
+  active?: boolean
+}
+
 export class CreateUserDto {
   @Transform(upper)
   @IsString()

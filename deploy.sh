@@ -75,10 +75,18 @@ cmd_build() {
     warn "cây làm việc còn thay đổi chưa commit, ảnh sẽ mang nhãn $tag nhưng không khớp commit đó"
   fi
 
-  # Số phiên bản in ở chân cột menu. git describe cho "v0.4.0" khi HEAD đúng là
-  # một tag, và "v0.4.0-3-gabc1234" khi đã đi thêm ba commit — cái đuôi ấy cũng
-  # là thông tin: nó nói ngay rằng bản đang chạy không phải bản đã phát hành.
-  local ver; ver=$(git describe --tags --always 2>/dev/null || echo "$tag")
+  # Số phiên bản in ở chân cột menu, dạng v0.1.0-a1b2c3d.
+  #
+  # Luôn có cả hai nửa, kể cả khi HEAD đúng là một tag. `git describe` trần thì
+  # in "v0.1.0" ở commit được gắn tag rồi "v0.1.0-3-gabc1234" ba commit sau —
+  # hai hình dạng khác nhau cho cùng một chỗ trên màn hình, và cái đầu không
+  # nói được nó dựng từ commit nào. Ghép tay thì mọi bản đều chỉ đúng một
+  # commit, và đọc ngược ra được.
+  #
+  # Chưa gắn tag nào thì lùi về v0.0.0 — thật thà hơn là mượn mã commit làm số
+  # phiên bản.
+  local base; base=$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)
+  local ver="$base-$tag"
 
   docker buildx inspect nexus >/dev/null 2>&1 || {
     say "tạo builder"; docker buildx create --name nexus --use >/dev/null
@@ -87,9 +95,12 @@ cmd_build() {
 
   for s in $(pick "$@"); do
     say "dựng $s  ($ver)"
+    # Ba nhãn: mã commit để ghim chính xác, số phiên bản để người đọc gọi tên,
+    # và latest cho máy chủ kéo về mà không phải sửa .env mỗi lần.
     local args=(--platform linux/arm64 -f "apps/$s/Dockerfile"
                 --build-arg "APP_VERSION=$ver"
-                -t "$(img "$s"):$tag" -t "$(img "$s"):latest" --push .)
+                -t "$(img "$s"):$tag" -t "$(img "$s"):$base" -t "$(img "$s"):latest"
+                --push .)
     # Ảnh web phải biết gốc API và số phiên bản lúc dựng, vì cả hai bị nướng
     # vào bundle chứ không đọc lúc chạy.
     [ "$s" = web ] && args=(--build-arg "VITE_API_BASE=$VITE_API_BASE"

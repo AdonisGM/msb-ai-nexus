@@ -5,7 +5,7 @@ import { AuthService } from '../auth/auth.service'
 import { SessionService } from '../auth/session.service'
 import { sessions, users } from '../db/schema'
 import { closeDb, resetDb, testDb } from '../test/db'
-import { makeBranch, makeCustomer, makeUnit, makeUser } from '../test/factories'
+import { TEST_PASSWORD, makeBranch, makeCustomer, makeUnit, makeUser } from '../test/factories'
 import { UsersService, type TreeNode } from './users.service'
 
 const sessionService = new SessionService(testDb, {
@@ -454,5 +454,81 @@ describe('resetting a password', () => {
     await expect(service.setPassword('nobody', { password: 'Nexus@2027' })).rejects.toThrow(
       NotFoundException,
     )
+  })
+})
+
+describe('the roster', () => {
+  /** Not the tree. That one is the org chart and leaves the admin out; this
+   *  screen has to show them, because a roster that cannot see the account
+   *  doing the looking is a roster with a hole in it. */
+  it('includes the admin, which the chart does not', async () => {
+    const f = await withAdmin()
+    const { rows } = await service.list()
+
+    expect(rows.map((row) => row.id)).toContain(f.admin.id)
+    expect(find(await service.tree(f.admin), f.admin.name)).toBeUndefined()
+  })
+
+  it('carries the three columns publicUser does not', async () => {
+    const f = await withAdmin()
+    await service.update(f.admin, f.saleRb.id, {
+      email: 'hai@msb.com.vn',
+      phone: '0901234567',
+    })
+    await auth.login(f.saleRb.code, TEST_PASSWORD)
+
+    const row = (await service.list()).rows.find((r) => r.id === f.saleRb.id)!
+    expect(row.email).toBe('hai@msb.com.vn')
+    expect(row.phone).toBe('0901234567')
+    /** How an admin finds the accounts nobody has ever used. */
+    expect(row.lastLoginAt).not.toBeNull()
+  })
+
+  it('names the manager, so the chart is readable from a flat list', async () => {
+    const f = await withAdmin()
+    const row = (await service.list()).rows.find((r) => r.id === f.saleRb.id)!
+    expect(row.managerName).toBe(f.leadRb.name)
+  })
+
+  it('reads top down: branch manager, team leads, salespeople, admin', async () => {
+    const f = await withAdmin()
+    const roles = (await service.list()).rows.map((row) => row.role)
+    expect(roles).toEqual(['bm', 'team_lead', 'team_lead', 'sale', 'sale', 'admin'])
+  })
+
+  it('searches the name, both codes, the email and the phone', async () => {
+    const f = await withAdmin()
+    await service.update(f.admin, f.saleRb.id, {
+      email: 'hai@msb.com.vn',
+      phone: '0901 234 567',
+    })
+
+    for (const q of [f.saleRb.name, f.saleRb.code, f.saleRb.employeeCode, 'hai@msb']) {
+      const found = await service.list({ q })
+      expect(found.rows.map((r) => r.id), q).toContain(f.saleRb.id)
+    }
+    /** Nobody types a number the same way twice, so both sides lose spaces. */
+    expect((await service.list({ q: '0901234567' })).rows[0].id).toBe(f.saleRb.id)
+  })
+
+  it('filters by role and by whether the account still works', async () => {
+    const f = await withAdmin()
+    await service.update(f.admin, f.saleSse.id, { active: false })
+
+    expect((await service.list({ role: 'team_lead' })).rows).toHaveLength(2)
+    expect((await service.list({ active: false })).rows).toHaveLength(1)
+    expect((await service.list({ active: true })).rows).toHaveLength(5)
+  })
+
+  /** The four figures above the table describe the branch. A headcount that
+   *  changed every time somebody typed in the search box would be answering a
+   *  different question than the one its label asks. */
+  it('counts everybody in the summary, whatever the filter says', async () => {
+    const f = await withAdmin()
+    await service.update(f.admin, f.saleSse.id, { active: false })
+
+    const narrowed = await service.list({ role: 'sale' })
+    expect(narrowed.rows).toHaveLength(2)
+    expect(narrowed.summary).toEqual({ total: 6, active: 5, locked: 1, admins: 1 })
   })
 })

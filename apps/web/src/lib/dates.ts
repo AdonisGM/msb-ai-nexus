@@ -127,3 +127,16 @@ export function dmDate(value: string | Date | null | undefined): string {
   if (Number.isNaN(date.getTime())) return '—'
   return `${String(date.getDate()).padStart(2, '0')}.${String(date.getMonth() + 1).padStart(2, '0')}`
 }
+
+/** Date and time, `20.09 08:41`.
+ *
+ *  For a column where the day alone is not enough — "last signed in" on an
+ *  account somebody may have used an hour ago. No year, same reason as
+ *  `dmDate`: everything on a working screen is this year. */
+export function vnDateTime(value: string | Date | null | undefined): string {
+  if (!value) return '—'
+  const date = typeof value === 'string' ? new Date(value) : value
+  if (Number.isNaN(date.getTime())) return '—'
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}

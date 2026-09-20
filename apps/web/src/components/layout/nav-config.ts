@@ -1,4 +1,11 @@
-import { ClipboardList, Gauge, LayoutDashboard, Users, type LucideIcon } from 'lucide-react'
+import {
+  ClipboardList,
+  Gauge,
+  LayoutDashboard,
+  Users,
+  UserCog,
+  type LucideIcon,
+} from 'lucide-react'
 import type { Me } from '~/api/auth'
 import type { DictKey } from '~/i18n'
 
@@ -14,6 +21,9 @@ export type NavItem = {
   to: string
   icon: LucideIcon
   roles: ReadonlyArray<Me['role']>
+  /** A short word beside the label, for a menu item that belongs to one role
+   *  rather than to a tier. Only the admin's roster uses it so far. */
+  hint?: string
 }
 
 export const NAV: NavItem[] = [
@@ -44,6 +54,13 @@ export const NAV: NavItem[] = [
     to: '/dashboard',
     icon: LayoutDashboard,
     roles: ['team_lead', 'bm'],
+  },
+  {
+    key: 'nav.users',
+    to: '/users',
+    icon: UserCog,
+    roles: ['admin'],
+    hint: 'Admin',
   },
 ]
 
