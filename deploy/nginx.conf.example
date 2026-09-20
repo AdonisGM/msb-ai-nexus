@@ -160,20 +160,24 @@ server {
     access_log /var/log/nginx/langfuse.access.log;
     client_max_body_size 50m;
 
-    # ĐỌC KỸ TRƯỚC KHI MỞ RA INTERNET
+    # Ai vào được trang này
     #
-    # Giao diện này đọc được **toàn bộ nội dung prompt của mọi dự án** trong
-    # bản chạy — với AI Nexus nghĩa là tên khách hàng thật và ghi chú nhân
-    # viên gõ vào. Nó không phải một bảng điều khiển hạ tầng vô hại.
+    # Langfuse có đăng nhập riêng bằng email và mật khẩu. Tài khoản đầu tiên
+    # do LANGFUSE_INIT_USER_EMAIL / _PASSWORD tạo ra ở lần chạy đầu; sau đó
+    # thêm người bằng cách mời trong giao diện.
     #
-    # Hai việc tối thiểu:
-    #   a. Đặt AUTH_DISABLE_SIGNUP=true trong .env của Langfuse ngay sau khi
-    #      tạo xong tài khoản đầu tiên. Để false là ai vào được trang cũng tự
-    #      mở tài khoản.
-    #   b. Chặn thêm một lớp nữa. Cloudflare Access là gọn nhất vì Cloudflare
-    #      đã đứng trước rồi. Không dùng thì bỏ chú thích hai dòng dưới và
-    #      điền dải IP của mình — nhớ là nhờ real_ip_header ở khối http,
-    #      $remote_addr đã là IP thật của khách chứ không phải của Cloudflare.
+    # Quyền xem dữ liệu đi theo tư cách thành viên của tổ chức, không theo
+    # việc có tài khoản. Người lạ tự đăng ký chỉ có một tổ chức rỗng của
+    # riêng họ và không thấy dự án nào của bạn.
+    #
+    # Dù vậy vẫn nên đặt AUTH_DISABLE_SIGNUP=true sau khi tạo xong tài khoản
+    # đầu tiên — không phải vì rò dữ liệu, mà vì không có lý do gì để người lạ
+    # mở được tài khoản trên máy chủ của mình.
+    #
+    # Muốn thêm một lớp nữa trước cả màn đăng nhập thì dùng Cloudflare Access,
+    # gọn nhất vì Cloudflare đã đứng trước rồi. Hoặc bỏ chú thích hai dòng
+    # dưới và điền dải IP của mình — nhờ real_ip_header ở khối http,
+    # $remote_addr đã là IP thật của khách chứ không phải của Cloudflare.
     #
     # allow 203.0.113.0/24;
     # deny all;
