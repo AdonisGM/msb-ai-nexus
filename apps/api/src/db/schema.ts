@@ -927,6 +927,180 @@ export type Segment = (typeof SEGMENTS)[number]
 export const LEVELS = ['cv1', 'cv2', 'cv3', 'cvc', 'tn', 'gd'] as const
 export type Level = (typeof LEVELS)[number]
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * The assistant
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** One thread of conversation with the assistant.
+ *
+ *  Owned by a person, never by a team: two salespeople asking about the same
+ *  customer are having two different conversations, and neither should read
+ *  the other's. The row scope that guards customers does not apply here —
+ *  a conversation is not a branch record, it is somebody's working notes.
+ *
+ *  `subjectId` anchors a thread to what it is about, so opening the assistant
+ *  from a customer file comes back to the same thread next time rather than
+ *  starting blank. A free-standing chat leaves it null. */
+export const conversations = pgTable(
+  'conversations',
+  {
+    id: text('id').primaryKey(),
+
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    /** Written by the model after the first exchange, because "Cuộc trò
+     *  chuyện 14:03" is not a title anybody can find again. */
+    title: text('title').notNull().default(''),
+
+    /** `customer`, `opportunity`, or null for a thread about nothing in
+     *  particular. */
+    subjectKind: text('subject_kind'),
+    subjectId: text('subject_id'),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Sorted on, so the list opens where the person left off. Kept as its own
+     *  column rather than read from the last message, which would be a
+     *  subquery on every row of the list. */
+    lastMessageAt: timestamp('last_message_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('conversations_owner_recent').on(t.ownerId, t.lastMessageAt),
+    check(
+      'conversations_subject_pair',
+      sql`(${t.subjectKind} is null) = (${t.subjectId} is null)`,
+    ),
+    check(
+      'conversations_subject_kind',
+      sql`${t.subjectKind} is null or ${t.subjectKind} in ('customer', 'opportunity')`,
+    ),
+  ],
+)
+
+export type Conversation = typeof conversations.$inferSelect
+
+/** One turn, as the model understands a turn.
+ *
+ *  `content` holds the blocks — text, and the model's own tool_use blocks —
+ *  which is what has to go back into the next request for the thread to
+ *  continue making sense. Tool *results* deliberately do not live here: they
+ *  can be fifty rows of a report, they are what the screen draws its charts
+ *  from, and how much of them to replay into context is a decision the chat
+ *  service makes per request. They live in `tool_calls` instead. */
+export const messages = pgTable(
+  'messages',
+  {
+    id: text('id').primaryKey(),
+
+    conversationId: text('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+
+    /** Position in the thread, from 1. */
+    seq: integer('seq').notNull(),
+
+    role: text('role').notNull(),
+
+    /** Anthropic content blocks, verbatim. Stored as sent and received so a
+     *  thread replays exactly rather than approximately. */
+    content: jsonb('content').notNull().default(sql`'[]'::jsonb`),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('messages_conversation_seq').on(t.conversationId, t.seq),
+    check('messages_role', sql`${t.role} in ('user', 'assistant')`),
+  ],
+)
+
+export type Message = typeof messages.$inferSelect
+
+/** Every tool the assistant reached for, and what came back.
+ *
+ *  Three jobs at once, which is why it is a table rather than a field:
+ *
+ *  - the screen draws its charts and tables from `result`, so a figure in the
+ *    chat comes from the same query the dashboard runs and never from
+ *    something the model typed;
+ *  - a write tool waits here as `pending` until a person approves it, and the
+ *    row is what the approval is checked against;
+ *  - it is the record of what the assistant read on somebody's behalf, which
+ *    a bank is going to ask about.
+ *
+ *  `inputHash` exists for the second job. Approving "set the due date to
+ *  26/09 on OPP-123" must not become a licence to run the same tool with
+ *  different arguments, so the approval is checked against a hash of the
+ *  input rather than against the tool's name. */
+export const toolCalls = pgTable(
+  'tool_calls',
+  {
+    id: text('id').primaryKey(),
+
+    conversationId: text('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+
+    /** The assistant turn that asked for it. */
+    messageId: text('message_id')
+      .notNull()
+      .references(() => messages.id, { onDelete: 'cascade' }),
+
+    /** The model's own id for the block, which is what a tool_result must be
+     *  addressed to when the thread continues. */
+    toolUseId: text('tool_use_id').notNull(),
+
+    name: text('name').notNull(),
+    input: jsonb('input').notNull().default(sql`'{}'::jsonb`),
+    inputHash: text('input_hash').notNull(),
+
+    /** `done` for a read that ran straight away; `pending` for a write waiting
+     *  on a person; then `approved`, `denied`, or `failed`. */
+    status: text('status').notNull().default('done'),
+
+    /** What the tool returned. Null while pending, and null on a denial —
+     *  there is nothing to draw and nothing to replay. */
+    result: jsonb('result'),
+
+    /** Why it failed, or the person's words when they declined. */
+    note: text('note'),
+
+    /** Who approved or declined, and when. Both null on a read: nobody was
+     *  asked, and recording a decision nobody made would be a lie in the one
+     *  table somebody will audit. */
+    decidedById: text('decided_by_id').references(() => users.id),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+
+    /** How long the tool itself took, so a slow thread can be blamed on the
+     *  right half. */
+    ms: integer('ms'),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('tool_calls_use_id').on(t.toolUseId),
+    index('tool_calls_conversation').on(t.conversationId, t.createdAt),
+    check(
+      'tool_calls_status',
+      sql`${t.status} in ('pending', 'done', 'approved', 'denied', 'failed')`,
+    ),
+    /** A decision has a decider and a time, or it has neither. */
+    check(
+      'tool_calls_decision_pair',
+      sql`(${t.decidedById} is null) = (${t.decidedAt} is null)`,
+    ),
+    /** Nothing is approved or denied without somebody's name on it. */
+    check(
+      'tool_calls_decided_by',
+      sql`${t.status} not in ('approved', 'denied') or ${t.decidedById} is not null`,
+    ),
+    /** A pending call has not run, so it cannot have a result yet. */
+    check('tool_calls_pending_empty', sql`${t.status} <> 'pending' or ${t.result} is null`),
+  ],
+)
+
+export type ToolCall = typeof toolCalls.$inferSelect
+
 /* No display labels live here, and none live anywhere else in the API.
  * The API speaks codes — `sale`, `sse`, `cv1` — and the web app owns the
  * dictionary that turns them into words. That keeps every user-facing string

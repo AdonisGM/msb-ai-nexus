@@ -1,9 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { eq } from 'drizzle-orm'
 import { closeDb, resetDb, testDb } from '../test/db'
 import {
   makeAuditEvent,
   makeBranch,
+  makeConversation,
   makeCustomer,
+  makeMessage,
+  makeToolCall,
   makeOpportunity,
   makeOpportunityProduct,
   makeSignal,
@@ -13,11 +17,14 @@ import {
 } from '../test/factories'
 import {
   auditEvents,
+  conversations,
   customers,
+  messages,
   opportunities,
   opportunityProducts,
   signals,
   targets,
+  toolCalls,
   users,
 } from './schema'
 
@@ -794,5 +801,164 @@ describe('targets', () => {
     const branch = await makeBranch()
 
     await expectViolation(makeTarget({ unitId: branch.unit.id, amount: 0 }), 'targets_amount')
+  })
+})
+
+describe('conversations', () => {
+  /** A thread is about one thing or about nothing. Half a reference — a kind
+   *  with no id — is a row no screen can open. */
+  it('refuses a subject kind with no id', async () => {
+    const branch = await makeBranch()
+    await expectViolation(
+      makeConversation({ ownerId: branch.saleRb.id, subjectKind: 'customer' }),
+      'conversations_subject_pair',
+    )
+  })
+
+  it('refuses an id with no kind', async () => {
+    const branch = await makeBranch()
+    await expectViolation(
+      makeConversation({ ownerId: branch.saleRb.id, subjectId: 'cus_1' }),
+      'conversations_subject_pair',
+    )
+  })
+
+  it('refuses a subject the screens cannot open', async () => {
+    const branch = await makeBranch()
+    await expectViolation(
+      makeConversation({
+        ownerId: branch.saleRb.id,
+        subjectKind: 'invoice',
+        subjectId: 'inv_1',
+      }),
+      'conversations_subject_kind',
+    )
+  })
+
+  it('takes a thread about nothing in particular', async () => {
+    const branch = await makeBranch()
+    const row = await makeConversation({ ownerId: branch.saleRb.id })
+    expect(row.subjectKind).toBeNull()
+  })
+})
+
+describe('messages', () => {
+  it('numbers a thread once per position', async () => {
+    const branch = await makeBranch()
+    const thread = await makeConversation({ ownerId: branch.saleRb.id })
+    await makeMessage({ conversationId: thread.id, seq: 1 })
+
+    await expectViolation(
+      makeMessage({ conversationId: thread.id, seq: 1 }),
+      'messages_conversation_seq',
+    )
+  })
+
+  /** Tool results come back as a `user` turn, so the two roles are the whole
+   *  set. A `system` row here would be a prompt stored as history. */
+  it('refuses a role that is not one of the two', async () => {
+    const branch = await makeBranch()
+    const thread = await makeConversation({ ownerId: branch.saleRb.id })
+
+    await expectViolation(
+      makeMessage({ conversationId: thread.id, role: 'system' }),
+      'messages_role',
+    )
+  })
+
+  it('goes with the thread when the thread goes', async () => {
+    const branch = await makeBranch()
+    const thread = await makeConversation({ ownerId: branch.saleRb.id })
+    await makeMessage({ conversationId: thread.id })
+
+    await testDb.delete(conversations).where(eq(conversations.id, thread.id))
+    expect(await testDb.select().from(messages)).toHaveLength(0)
+  })
+})
+
+describe('tool calls', () => {
+  async function thread() {
+    const branch = await makeBranch()
+    const conversation = await makeConversation({ ownerId: branch.saleRb.id })
+    const message = await makeMessage({ conversationId: conversation.id, role: 'assistant' })
+    return { branch, conversationId: conversation.id, messageId: message.id }
+  }
+
+  it('refuses a status no screen knows how to draw', async () => {
+    const t = await thread()
+    await expectViolation(
+      makeToolCall({ conversationId: t.conversationId, messageId: t.messageId, status: 'maybe' }),
+      'tool_calls_status',
+    )
+  })
+
+  /** The model addresses its tool_result to this id. Two rows claiming the
+   *  same one means a thread that cannot be replayed. */
+  it('keeps one row per tool use id', async () => {
+    const t = await thread()
+    await makeToolCall({ ...t, toolUseId: 'toolu_1' })
+
+    await expectViolation(makeToolCall({ ...t, toolUseId: 'toolu_1' }), 'tool_calls_use_id')
+  })
+
+  it('refuses a decision with no time on it', async () => {
+    const t = await thread()
+    await expectViolation(
+      makeToolCall({ ...t, decidedById: t.branch.saleRb.id }),
+      'tool_calls_decision_pair',
+    )
+  })
+
+  /** An approval nobody signed is the one row a bank will ask about. */
+  it('refuses an approval with nobody behind it', async () => {
+    const t = await thread()
+    await expectViolation(
+      makeToolCall({ ...t, status: 'approved' }),
+      'tool_calls_decided_by',
+    )
+  })
+
+  it('refuses a denial with nobody behind it', async () => {
+    const t = await thread()
+    await expectViolation(makeToolCall({ ...t, status: 'denied' }), 'tool_calls_decided_by')
+  })
+
+  /** Nothing has run yet, so there is nothing to have come back. */
+  it('refuses a result on a call still waiting for a person', async () => {
+    const t = await thread()
+    await expectViolation(
+      makeToolCall({ ...t, status: 'pending', result: { rows: [] } }),
+      'tool_calls_pending_empty',
+    )
+  })
+
+  it('takes a read that ran on its own, with nobody asked', async () => {
+    const t = await thread()
+    const row = await makeToolCall({ ...t, status: 'done', result: { leads: 10 } })
+
+    expect(row.decidedById).toBeNull()
+    expect(row.decidedAt).toBeNull()
+  })
+
+  it('takes a write a person approved', async () => {
+    const t = await thread()
+    const row = await makeToolCall({
+      ...t,
+      name: 'record_signal',
+      status: 'approved',
+      decidedById: t.branch.saleRb.id,
+      decidedAt: new Date(),
+      result: { id: 'sig_1' },
+    })
+
+    expect(row.status).toBe('approved')
+  })
+
+  it('goes with the thread when the thread goes', async () => {
+    const t = await thread()
+    await makeToolCall(t)
+
+    await testDb.delete(conversations).where(eq(conversations.id, t.conversationId))
+    expect(await testDb.select().from(toolCalls)).toHaveLength(0)
   })
 })

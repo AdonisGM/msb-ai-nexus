@@ -2,19 +2,25 @@ import { hashSync } from 'bcryptjs'
 import { eq } from 'drizzle-orm'
 import {
   auditEvents,
+  conversations,
   customers,
+  messages,
   opportunities,
   opportunityProducts,
   signals,
+  toolCalls,
   targets,
   units,
   users,
   type AuditEvent,
+  type Conversation,
   type Customer,
+  type Message,
   type Opportunity,
   type OpportunityProduct,
   type Signal,
   type Target,
+  type ToolCall,
   type Unit,
   type User,
 } from '../db/schema'
@@ -274,6 +280,48 @@ export async function makeAuditEvent(
        *  schema rule, so the default respects it rather than producing rows
        *  that cannot be written. */
       heldMs: first ? null : (overrides.heldMs ?? 60_000),
+    })
+    .returning()
+  return row
+}
+
+export async function makeConversation(
+  overrides: Partial<Conversation> & { ownerId: string },
+): Promise<Conversation> {
+  const [row] = await testDb
+    .insert(conversations)
+    .values({ ...overrides, id: overrides.id ?? nextId('cnv') })
+    .returning()
+  return row
+}
+
+export async function makeMessage(
+  overrides: Partial<Message> & { conversationId: string },
+): Promise<Message> {
+  const [row] = await testDb
+    .insert(messages)
+    .values({
+      ...overrides,
+      id: overrides.id ?? nextId('msg'),
+      seq: overrides.seq ?? 1,
+      role: overrides.role ?? 'user',
+      content: overrides.content ?? [{ type: 'text', text: 'xin chào' }],
+    })
+    .returning()
+  return row
+}
+
+export async function makeToolCall(
+  overrides: Partial<ToolCall> & { conversationId: string; messageId: string },
+): Promise<ToolCall> {
+  const [row] = await testDb
+    .insert(toolCalls)
+    .values({
+      ...overrides,
+      id: overrides.id ?? nextId('tc'),
+      toolUseId: overrides.toolUseId ?? nextId('toolu'),
+      name: overrides.name ?? 'get_funnel',
+      inputHash: overrides.inputHash ?? 'hash',
     })
     .returning()
   return row

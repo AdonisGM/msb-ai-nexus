@@ -16,6 +16,9 @@ export const testDb: Db = drizzle(client, { schema })
  *  here would leak rows between tests, and the failure shows up somewhere
  *  unrelated hours later. */
 const TABLES = [
+  'tool_calls',
+  'messages',
+  'conversations',
   'audit_events',
   'opportunity_products',
   'opportunities',
