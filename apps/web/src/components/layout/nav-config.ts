@@ -1,11 +1,4 @@
-import {
-  ClipboardList,
-  Gauge,
-  LayoutDashboard,
-  Users,
-  UserCog,
-  type LucideIcon,
-} from 'lucide-react'
+import { Gauge, LayoutDashboard, Users, UserCog, type LucideIcon } from 'lucide-react'
 import type { Me } from '~/api/auth'
 import type { DictKey } from '~/i18n'
 
@@ -28,10 +21,17 @@ export type NavItem = {
 
 export const NAV: NavItem[] = [
   {
-    key: 'nav.today',
-    to: '/',
-    icon: ClipboardList,
-    roles: ['sale', 'team_lead', 'bm', 'admin'],
+    /** First, and first on purpose: a team lead opens the app to find out who
+     *  needs chasing, and a branch manager to read the branch. Both are
+     *  questions this screen answers before any list does.
+     *
+     *  One screen for the two roles, because they ask different questions of
+     *  the same figures — a difference in what the rows are grouped by, not a
+     *  reason for two screens. */
+    key: 'nav.dashboard',
+    to: '/dashboard',
+    icon: LayoutDashboard,
+    roles: ['team_lead', 'bm'],
   },
   {
     key: 'nav.customers',
@@ -46,16 +46,6 @@ export const NAV: NavItem[] = [
     roles: ['sale', 'team_lead', 'bm', 'admin'],
   },
   {
-    /** One screen for the two roles that read rather than work: a team lead
-     *  chasing their people and a branch manager reading the unit. They ask
-     *  different questions of the same figures, which is a difference in what
-     *  the rows are grouped by, not a reason for two screens. */
-    key: 'nav.dashboard',
-    to: '/dashboard',
-    icon: LayoutDashboard,
-    roles: ['team_lead', 'bm'],
-  },
-  {
     key: 'nav.users',
     to: '/users',
     icon: UserCog,
@@ -66,4 +56,13 @@ export const NAV: NavItem[] = [
 
 export function navFor(role: Me['role']): NavItem[] {
   return NAV.filter((item) => item.roles.includes(role))
+}
+
+/** Where this person lands when they sign in, or click the logo.
+ *
+ *  Their first menu item rather than a fixed path: the menu already says what
+ *  each role is here to do, and a hard-coded home would send a salesperson to
+ *  a screen the menu does not offer them. */
+export function homeFor(role: Me['role']): string {
+  return navFor(role)[0]?.to ?? '/customers'
 }

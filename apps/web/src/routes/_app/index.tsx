@@ -1,30 +1,17 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { Card, CardTitle } from '~/components/ui/primitives'
-import { t } from '~/i18n'
+import { createFileRoute, redirect } from '@tanstack/react-router'
+import { homeFor } from '~/components/layout/nav-config'
 
-export const Route = createFileRoute('/_app/')({ component: Today })
-
-/** Placeholder while the screens are built. It shows who is signed in, which
- *  is the one thing worth proving before anything else exists. */
-function Today() {
-  const { user } = Route.useRouteContext()
-
-  return (
-    <div className="flex flex-col gap-5">
-      <div>
-        <h1 className="text-[17px] font-semibold tracking-tight">{t('nav.today')}</h1>
-        <p className="mt-1 text-[12.5px] text-muted">
-          {user.name} · {t(`role.${user.role}`)}
-          {user.segment ? ` · ${t(`segment.${user.segment}`)}` : ''}
-        </p>
-      </div>
-
-      <Card>
-        <CardTitle>Đang dựng</CardTitle>
-        <p className="mt-2 text-[12.5px] text-muted">
-          Khung ứng dụng đã chạy. Các màn hình sẽ dựng tiếp lên đây.
-        </p>
-      </Card>
-    </div>
-  )
-}
+/** Nobody stays here.
+ *
+ *  `/` is where signing in lands and where the logo points, but there is no
+ *  screen behind it any more — the menu decides where each role starts, so
+ *  this hands over to their first tab: the dashboard for a team lead or a
+ *  branch manager, the customer list for everyone else.
+ *
+ *  Redirected in `beforeLoad` rather than from a component, so the browser
+ *  never paints an empty page on the way through. */
+export const Route = createFileRoute('/_app/')({
+  beforeLoad: ({ context }) => {
+    throw redirect({ to: homeFor(context.user.role), replace: true })
+  },
+})

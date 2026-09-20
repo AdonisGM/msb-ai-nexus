@@ -141,8 +141,10 @@ function TopBar({
 function SectionTitle({ user }: { user: Me }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
 
+  /** Longest match wins, so a future `/customers/segments` names itself rather
+   *  than borrowing the title of `/customers`. */
   const current = navFor(user.role)
-    .filter((item) => (item.to === '/' ? pathname === '/' : pathname.startsWith(item.to)))
+    .filter((item) => pathname.startsWith(item.to))
     .sort((a, b) => b.to.length - a.to.length)[0]
 
   if (!current) return null

@@ -14,7 +14,6 @@ export const vi = {
   'app.product': 'AI Nexus',
   'app.tagline': 'Nền tảng AI điều hành bán hàng đa tầng',
 
-  'nav.today': 'Việc hôm nay',
   'nav.customers': 'Khách hàng',
   'nav.dashboard': 'Số liệu',
   'nav.users': 'Người dùng',
