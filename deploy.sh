@@ -129,9 +129,39 @@ cmd_ps()      { need_run_env; dc ps; }
 cmd_logs()    { need_run_env; dc logs -f --tail=100 "$@"; }
 cmd_psql()    { need_run_env; dc exec db psql -U nexus -d "$DB" "$@"; }
 
+# Biến nào có trong .env mà compose không hề nhắc tới.
+#
+# Bắt đúng cái bẫy đã mất một buổi: `deploy` chỉ kéo ảnh, nó KHÔNG cập nhật
+# docker-compose.prod.yml — tệp ấy nằm trên máy chủ, ngoài ảnh docker. Bản mới
+# thêm biến vào compose thì máy chủ vẫn dùng bản cũ, và điền khoá vào .env
+# chẳng có tác dụng gì: compose không có chỗ nào truyền nó vào container.
+#
+# Không có gì báo lỗi. Container vẫn xanh, chỉ là thiếu một biến nó chưa từng
+# được nhận.
+check_env_reaches_compose() {
+  local orphan=()
+  while IFS='=' read -r key _; do
+    case "$key" in ''|\#*) continue ;; esac
+    case "$key" in
+      # Biến của chính deploy.sh và của compose ở cấp ngoài.
+      REGISTRY|IMAGE_NS|TAG|BIND_ADDR|PORT_*|NEXUS_DB) continue ;;
+      # Chỉ dùng ở máy phát triển: bản chạy thật tự ghép DATABASE_URL từ
+      # POSTGRES_PASSWORD, và VITE_API_BASE đã nướng vào ảnh web lúc build.
+      DATABASE_URL|TEST_DATABASE_URL|POSTGRES_USER|POSTGRES_DB|VITE_API_BASE) continue ;;
+    esac
+    grep -q "\${$key" "$COMPOSE_FILE" || orphan+=("$key")
+  done < "$ENV_FILE"
+
+  [ ${#orphan[@]} -eq 0 ] && return 0
+  warn "$ENV_FILE có biến mà $COMPOSE_FILE không dùng: ${orphan[*]}"
+  note "thường là do compose trên máy chủ cũ hơn bản trong kho."
+  note "chép lại:  scp docker-compose.prod.yml deploy.sh máy-chủ:~/nexus/"
+}
+
 # Kéo bản mới rồi thay tại chỗ. Migration tự chạy lúc API khởi động.
 cmd_deploy() {
   need_run_env
+  check_env_reaches_compose
   cmd_pull
   say "thay container bằng bản mới"
   dc up -d --remove-orphans
