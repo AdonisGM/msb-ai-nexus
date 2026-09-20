@@ -17,7 +17,7 @@ import { ReportsService } from '../reports/reports.service'
 import { SignalsService } from '../signals/signals.service'
 import { TargetsService } from '../targets/targets.service'
 import { UsersService } from '../users/users.service'
-import { propagateAttributes, startObservation } from '@langfuse/tracing'
+import { propagateAttributes, startActiveObservation, startObservation } from '@langfuse/tracing'
 import { claude, MODEL, OUTPUT_CONFIG, THINKING, TITLE_MODEL } from './claude'
 import { LANGFUSE_ENABLED } from './tracing'
 import { systemPrompt, TITLE_PROMPT } from './prompt'
@@ -297,7 +297,22 @@ export class ChatService {
         sessionId: conversation.id,
         tags: [user.role, emit ? 'stream' : 'blocking'],
       },
-      () => this.runTurn(user, conversation, said, emit),
+      () =>
+        /** A span around the whole turn, so a trace opens on the question and
+         *  the answer rather than on a row of token counts. The per-request
+         *  generations and each tool call nest inside it.
+         *
+         *  Sending the words at all is a decision the self-hosted stack makes
+         *  safe: they carry customer names and notes a salesperson typed, and
+         *  on somebody else's cloud they would have no business leaving this
+         *  machine. On your own, a trace without them is a bill without an
+         *  itemisation — you can see what a turn cost and never why. */
+        startActiveObservation('chat', async (span) => {
+          span.update({ input: textOfTurn(said) })
+          const answer = await this.runTurn(user, conversation, said, emit)
+          span.update({ output: answer })
+          return answer
+        }),
     )
   }
 
@@ -311,6 +326,18 @@ export class ChatService {
     const sink: ToolSink = (call) => {
       ran.push(call)
       emit?.({ kind: 'tool', name: call.name, risk: metaOf(call.name).risk })
+
+      /** One span per tool, with what it was asked and what came back. This is
+       *  what makes a trace worth opening: the token counts say a turn was
+       *  expensive, these say which read made it so — and whether the model
+       *  was reaching for the right thing at all. */
+      if (LANGFUSE_ENABLED) {
+        startObservation(`tool:${call.name}`, {
+          input: call.input,
+          output: call.result,
+          metadata: { risk: metaOf(call.name).risk, ms: call.ms, failed: call.failed },
+        }).end()
+      }
     }
 
     const runner = claude().beta.messages.toolRunner({
@@ -348,7 +375,7 @@ export class ChatService {
        *  iteration to close before the loop moves on to the tools. */
       for await (const stream of runner as AsyncIterable<BetaMessageStream>) {
         stream.on('text', (delta) => emit({ kind: 'text', delta }))
-        record(await stream.finalMessage())
+        record(await stream.finalMessage(), [...runner.params.messages])
       }
     } else {
       /** Iterated rather than `runUntilDone()`, because each iteration is one
@@ -356,7 +383,7 @@ export class ChatService {
        *  runner to finish hands back only the last message, and the loop's
        *  other two go unmeasured. */
       for await (const message of runner as AsyncIterable<Anthropic.Beta.Messages.BetaMessage>) {
-        record(message)
+        record(message, [...runner.params.messages])
       }
     }
 
@@ -366,6 +393,8 @@ export class ChatService {
     const produced = runner.params.messages.slice(history.length + 1) as Turn[]
 
     await this.persist(conversation, [said, ...produced], ran)
+
+    return produced.map(textOfTurn).filter(Boolean).join('\n\n')
   }
 
   private services() {
@@ -556,6 +585,16 @@ export class ChatService {
 
 /** A turn's content is either a string the caller typed or a list of blocks.
  *  Stored as blocks either way, so everything downstream has one shape. */
+/** The words in a turn, for a trace to open on. The tool plumbing is left out
+ *  — it has its own spans. */
+function textOfTurn(turn: Turn): string {
+  return normalise(turn.content)
+    .filter((block): block is Anthropic.Beta.Messages.BetaTextBlockParam => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n')
+    .trim()
+}
+
 function normalise(content: Turn['content']): Block[] {
   return typeof content === 'string' ? [{ type: 'text', text: content }] : (content as Block[])
 }
@@ -588,7 +627,7 @@ function stable(value: unknown): string {
  *  billed requests, and a single total would hide the one that ran away. The
  *  cache figures are the point of the exercise — they are how anybody can tell
  *  whether the two breakpoints are still working after a prompt is edited. */
-function record(message: Anthropic.Beta.Messages.BetaMessage): void {
+function record(message: Anthropic.Beta.Messages.BetaMessage, sent: Turn[]): void {
   if (!LANGFUSE_ENABLED) return
 
   const usage = message.usage as {
@@ -602,7 +641,29 @@ function record(message: Anthropic.Beta.Messages.BetaMessage): void {
     'chat-turn',
     {
       model: message.model,
-      output: { stop_reason: message.stop_reason },
+      /** Everything the request carried and everything it returned. On a
+       *  self-hosted instance there is no reason to hold any of it back, and
+       *  a trace you cannot read the prompt of is a trace you cannot use to
+       *  improve the prompt.
+       *
+       *  `sent` is the runner's own message array, which it mutates as it
+       *  goes. The two iterators disagree about when the reply lands in it:
+       *  the streaming one yields before the response exists, the plain one
+       *  may have appended it already. Dropping a trailing assistant turn
+       *  settles both, and it can only ever be this reply — mid-loop the
+       *  array never ends on an assistant turn otherwise, because the runner
+       *  only keeps going when the last reply asked for a tool, and it
+       *  appends the result as a user turn before asking again. */
+      input: sent.at(-1)?.role === 'assistant' ? sent.slice(0, -1) : sent,
+      output: {
+        content: message.content,
+        stop_reason: message.stop_reason,
+      },
+      modelParameters: {
+        thinking: THINKING.type,
+        effort: OUTPUT_CONFIG.effort,
+        max_tokens: MAX_TOKENS,
+      },
       usageDetails: {
         input: usage.input_tokens,
         output: usage.output_tokens,
