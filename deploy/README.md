@@ -10,7 +10,7 @@ Máy chủ chỉ cần ba tệp, không cần mã nguồn, không cần Node hay
 
     mkdir -p /srv/nexus && cd /srv/nexus
     # chép ba tệp trên lên
-    cp .env.example .env        # rồi điền, xem bảng dưới
+    cp env.example .env         # rồi điền, xem bảng dưới
     docker login registry.marigate.org
     ./deploy.sh pull
     ./deploy.sh up
