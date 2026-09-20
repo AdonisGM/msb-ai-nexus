@@ -13,6 +13,7 @@
     "seed": "pnpm --filter @nexus/api seed",
     "up": "docker compose up -d --build",
     "down": "docker compose down",
-    "seed:demo": "pnpm --filter @nexus/api seed:demo"
+    "seed:demo": "pnpm --filter @nexus/api seed:demo",
+    "seed:bulk": "pnpm --filter @nexus/api seed:bulk"
   }
 }

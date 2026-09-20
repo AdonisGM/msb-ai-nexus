@@ -17,7 +17,7 @@ export const ACCOUNT_IDS = {
   saleRb: 'usr_sale_rb_01',
 } as const
 
-type SeedUser = {
+export type SeedUser = {
   id: string
   /** Login handle. */
   code: string
@@ -112,7 +112,7 @@ const OPERATORS: SeedUser[] = [
  *  definition if they already exist. Safe to run at any time; it never touches
  *  customers or deals. */
 export async function seedAccounts(db: Db, password: string) {
-  const passwordHash = hashSync(password, 10)
+  const passwordHash = hashPassword(password)
 
   await db
     .insert(units)
@@ -120,8 +120,17 @@ export async function seedAccounts(db: Db, password: string) {
     .onConflictDoUpdate({ target: units.id, set: { code: 'TH', name: 'Đơn vị TH' } })
 
   const all = [ADMIN, ...OPERATORS]
+  await upsertUsers(db, all, passwordHash)
+  return all
+}
 
-  for (const user of all) {
+/** Writes a roster, or brings it back to the definition given.
+ *
+ *  Shared with the bulk seed, which adds a second retail team on top of these
+ *  six. Order still matters — a manager has to exist before anyone points at
+ *  them — so the caller passes the list already sorted down the tree. */
+export async function upsertUsers(db: Db, roster: SeedUser[], passwordHash: string) {
+  for (const user of roster) {
     await db
       .insert(users)
       .values({ ...user, unitId: UNIT_ID, passwordHash, active: true })
@@ -137,10 +146,15 @@ export async function seedAccounts(db: Db, password: string) {
           segment: user.segment,
           managerId: user.managerId,
           passwordHash,
+          active: true,
           updatedAt: new Date(),
         },
       })
   }
+}
 
-  return all
+/** Hashes once. bcrypt at cost ten takes about a tenth of a second, which is
+ *  nothing for six accounts and half a minute for a roster of twenty. */
+export function hashPassword(password: string): string {
+  return hashSync(password, 10)
 }

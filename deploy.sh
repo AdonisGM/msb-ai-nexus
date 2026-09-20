@@ -148,6 +148,21 @@ cmd_seed_demo() {
   dc exec api node dist/seed.js --demo
 }
 
+# Một năm dữ liệu ở quy mô thật, để xem được màn Số liệu. Tuyển thêm nhân sự cho
+# chi nhánh rồi sinh khoảng một nghìn cơ hội. XOÁ giống seed-demo — hai lệnh là
+# hai lựa chọn, không chồng lên nhau.
+cmd_seed_bulk() {
+  need_run_env
+  [ -n "${SEED_PASSWORD:-}" ] || die "$ENV_FILE thiếu SEED_PASSWORD"
+  local deals=${1:-1000}
+  warn "lệnh này xoá sạch khách hàng, cơ hội và chỉ tiêu rồi sinh $deals cơ hội mới"
+  read -rp "    gõ 'bulk' để tiếp tục: " answer
+  [ "$answer" = bulk ] || die "dừng"
+  cmd_backup
+  dc exec api node dist/seed.js --bulk --deals "$deals"
+  note "mất khoảng nửa phút cho một nghìn cơ hội, vì mỗi cơ hội đi qua service thật"
+}
+
 # Sao lưu trước mọi thứ có thể hỏng. Nén ngay, và giữ tên theo giờ máy chủ.
 cmd_backup() {
   need_run_env
@@ -185,6 +200,7 @@ Dùng: ./deploy.sh <lệnh> [tham số]
   psql [...]        mở psql trong container db
   seed              ghi sáu tài khoản vận hành
   seed-demo         XOÁ rồi dựng lại dữ liệu mẫu (tự sao lưu trước)
+  seed-bulk [n]     XOÁ rồi sinh n cơ hội, mặc định 1000 (tự sao lưu trước)
   backup            kết xuất cơ sở dữ liệu ra backups/
   restore <tệp>     GHI ĐÈ cơ sở dữ liệu bằng một bản sao lưu
 TXT
@@ -202,6 +218,7 @@ case "${1:-help}" in
   psql)      shift; cmd_psql "$@" ;;
   seed)      shift; cmd_seed "$@" ;;
   seed-demo) shift; cmd_seed_demo "$@" ;;
+  seed-bulk) shift; cmd_seed_bulk "$@" ;;
   backup)    shift; cmd_backup "$@" ;;
   restore)   shift; cmd_restore "$@" ;;
   help|-h|--help) cmd_help ;;

@@ -1,11 +1,12 @@
-import { asc, eq, sql } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 import type { Db } from '../db/db.module'
 import { CustomersService } from '../customers/customers.service'
 import { OpportunitiesService } from '../opportunities/opportunities.service'
 import { SignalsService } from '../signals/signals.service'
 import { TargetsService } from '../targets/targets.service'
-import { auditEvents, opportunities, users, type User } from '../db/schema'
+import { opportunities, users, type User } from '../db/schema'
 import { ACCOUNT_IDS } from './accounts'
+import { backdate, daysFromNow, isoDate } from './replay'
 import {
   CR_TARGETS,
   DEALS,
@@ -17,23 +18,7 @@ import {
   type SeedDeal,
 } from './data'
 
-const DAY = 24 * 60 * 60 * 1000
-
-function daysFromNow(days: number) {
-  return new Date(Date.now() + days * DAY)
-}
-
-function isoDate(days: number) {
-  return daysFromNow(days).toISOString().slice(0, 10)
-}
-
 /** Wipes the demo data and builds it again.
- *
- *  Deals are replayed through the real services rather than written straight
- *  into the tables. It costs more than a bulk insert and it is the whole
- *  point: the audit trail, the send-backs, the handovers and the timings come
- *  out genuine, so opening the history of a deal during the demo shows a real
- *  trace instead of an empty panel. *//** Wipes the demo data and builds it again.
  *
  *  Leads are replayed through the real services rather than written straight
  *  into the tables. It costs more than a bulk insert and it is the whole
@@ -187,76 +172,6 @@ async function seedTargets(
       amount: VALUE_TARGETS[key],
     })
   }
-}
-
-/** Moves every trace back onto the calendar the seed table describes.
- *
- *  Replaying a lead through the services takes milliseconds, so without this
- *  every step would be timed at a fraction of a second and "how long until
- *  somebody rang them" would be a column of zeroes. Real work takes days.
- *
- *  The times come from the seed table rather than from a random spread, so a
- *  lead that reads "opened 34 days ago, first called on day 31" is exactly
- *  that on screen — and `heldMs` is recomputed from the new timestamps, so the
- *  log and the row it describes can never disagree.
- *
- *  Only demo data is ever touched. */
-async function backdate(db: Db, timelines: Map<string, SeedDeal>) {
-  for (const [id, deal] of timelines) {
-    const at: Partial<Record<string, Date>> = {
-      created: daysFromNow(-deal.openedDaysAgo),
-      contacted: when(deal.contactedDaysAgo),
-      advised: when(deal.advisedDaysAgo),
-      won: deal.outcome === 'won' ? when(deal.closedDaysAgo) : undefined,
-      lost: deal.outcome === 'lost' ? when(deal.closedDaysAgo) : undefined,
-      confirmed: when(deal.confirmedDaysAgo),
-    }
-
-    const trace = await db
-      .select({ id: auditEvents.id, kind: auditEvents.kind })
-      .from(auditEvents)
-      .where(eq(auditEvents.opportunityId, id))
-      .orderBy(asc(auditEvents.seq))
-
-    let previous: number | null = null
-
-    for (const event of trace) {
-      const stamp = at[event.kind] ?? daysFromNow(-deal.openedDaysAgo)
-
-      await db
-        .update(auditEvents)
-        .set({
-          createdAt: stamp,
-          /** Null on the first event and only there — the schema ties the two
-           *  together, so a gap here would be refused rather than silently
-           *  bending every duration drawn from this column. */
-          heldMs: previous === null ? null : Math.max(0, stamp.getTime() - previous),
-        })
-        .where(eq(auditEvents.id, event.id))
-
-      previous = stamp.getTime()
-    }
-
-    /** The lead's own marks move with its trace. Leaving them at replay time
-     *  would put "first contacted" minutes ago on a lead whose log says it was
-     *  three weeks back, and every figure drawn off the marks would disagree
-     *  with every figure drawn off the log. */
-    await db
-      .update(opportunities)
-      .set({
-        createdAt: at.created!,
-        contactedAt: at.contacted ?? null,
-        advisedAt: at.advised ?? null,
-        closedAt: at.won ?? at.lost ?? null,
-        confirmedAt: at.confirmed ?? null,
-        updatedAt: new Date(previous ?? at.created!.getTime()),
-      })
-      .where(eq(opportunities.id, id))
-  }
-}
-
-function when(daysAgo: number | undefined): Date | undefined {
-  return daysAgo === undefined ? undefined : daysFromNow(-daysAgo)
 }
 
 async function loadActors(db: Db) {
