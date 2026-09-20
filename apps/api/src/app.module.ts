@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common'
+import { AiModule } from './ai/ai.module'
 import { AuthModule } from './auth/auth.module'
 import { CustomersModule } from './customers/customers.module'
 import { DbModule } from './db/db.module'
@@ -10,7 +11,7 @@ import { UsersModule } from './users/users.module'
 import { HealthController } from './health.controller'
 
 @Module({
-  imports: [DbModule, AuthModule, CustomersModule, OpportunitiesModule, ReportsModule, SignalsModule, TargetsModule, UsersModule],
+  imports: [DbModule, AuthModule, AiModule, CustomersModule, OpportunitiesModule, ReportsModule, SignalsModule, TargetsModule, UsersModule],
   controllers: [HealthController],
 })
 export class AppModule {}

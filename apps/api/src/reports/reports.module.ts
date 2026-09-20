@@ -7,5 +7,8 @@ import { ReportsService } from './reports.service'
   imports: [AuthModule],
   controllers: [ReportsController],
   providers: [ReportsService],
+  /** The assistant reads through this service too, so the scope it inherits
+   *  is the one already tested here rather than a second copy of the rule. */
+  exports: [ReportsService],
 })
 export class ReportsModule {}
