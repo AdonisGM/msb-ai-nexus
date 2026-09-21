@@ -9,7 +9,7 @@ import { UsersService } from '../users/users.service'
 import { BLOCKER_CODES, PRODUCTS, signals, type User } from '../db/schema'
 import { closeDb, resetDb, testDb } from '../test/db'
 import { makeBranch, makeCustomer, makeOpportunity, makeUser } from '../test/factories'
-import { buildTools, metaOf, TOOL_META, type ToolSink } from './tools'
+import { buildTools, metaOf, runApproved, TOOL_META, type ToolSink } from './tools'
 
 /** The assistant reaches the same data through the same services as a request
  *  does, so the rule that matters is that it reaches no further. These tests
@@ -417,5 +417,77 @@ describe('naming somebody in a filter', () => {
       total: number
     }
     expect(found.total).toBe(1)
+  })
+})
+
+/** The branch manager reads figures and never touches a record — the rule the
+ *  business gave, mirrored on the web in `lib/can.ts` and enforced on every
+ *  HTTP write by `@Roles('sale', 'team_lead')`.
+ *
+ *  It has to be enforced here too, and that is the whole point of these tests.
+ *  The assistant does not go through a controller: `runApproved` calls the
+ *  service directly, and the services check *scope* — may this person see this
+ *  customer — not role. A branch manager can see every customer in their unit,
+ *  so without the guard they could write through the assistant exactly what
+ *  the API would have refused with a 403. */
+describe('what a branch manager may do through the assistant', () => {
+  const WRITES = ['record_signal', 'draft_opportunity', 'set_next_action', 'update_lead_fields']
+
+  it('is not offered a single write tool', async () => {
+    const b = await branch()
+    const names = buildTools(services, b.bm).map((tool) => tool.name)
+
+    for (const write of WRITES) expect(names, write).not.toContain(write)
+    /** The reads are all still there — this is a write rule, not a mute. */
+    expect(names).toContain('get_customer')
+    expect(names).toContain('search_opportunities')
+  })
+
+  it('still writes nothing even if an approval arrives for one', async () => {
+    const b = await branch()
+
+    await expect(
+      runApproved(services, b.bm, 'record_signal', {
+        customerId: b.rbCustomer.id,
+        type: 'need',
+        content: 'Ghi hộ',
+      }),
+    ).rejects.toThrow()
+
+    expect(await testDb.select().from(signals)).toHaveLength(0)
+  })
+
+  /** The approval comes back in a later request than the proposal, and the
+   *  only thing linking them is a row in `tool_calls`. A call raised while the
+   *  person was a team lead must not run once they are not. */
+  it('refuses a call that was proposed before the role changed', async () => {
+    const b = await branch()
+    const wasLead = { ...b.leadRb, role: 'bm' as const }
+
+    await expect(
+      runApproved(services, wasLead, 'set_next_action', {
+        opportunityId: b.rbLead.id,
+        nextAction: 'Gọi lại',
+      }),
+    ).rejects.toThrow()
+  })
+
+  it('leaves the write tools with everybody who does have them', async () => {
+    const b = await branch()
+
+    for (const user of [b.saleRb, b.leadRb]) {
+      const names = buildTools(services, user).map((tool) => tool.name)
+      for (const write of WRITES) expect(names, `${user.role}/${write}`).toContain(write)
+    }
+  })
+
+  /** The admin passes every role gate on the server too — a technical account
+   *  that still lands in the audit trail. */
+  it('leaves them with the admin as well', async () => {
+    const b = await branch()
+    const admin = { ...b.bm, role: 'admin' as const }
+    const names = buildTools(services, admin).map((tool) => tool.name)
+
+    for (const write of WRITES) expect(names, write).toContain(write)
   })
 })

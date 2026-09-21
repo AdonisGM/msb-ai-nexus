@@ -1,3 +1,4 @@
+import { ForbiddenException } from '@nestjs/common'
 import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod'
 import { z } from 'zod'
 import { CustomersService } from '../customers/customers.service'
@@ -117,6 +118,27 @@ export const TOOL_META: Record<string, ToolMeta> = {
   draft_opportunity: { deferred: true, risk: 'ask', renderer: 'card.opportunity' },
   set_next_action: { deferred: true, risk: 'ask', renderer: 'card.opportunity' },
   update_lead_fields: { deferred: true, risk: 'ask', renderer: 'card.opportunity' },
+}
+
+/** Whether this person may change a record at all.
+ *
+ *  The branch manager reads figures and never touches one — the business's
+ *  rule, mirrored on the web in `lib/can.ts` and enforced on every HTTP write
+ *  by `@Roles('sale', 'team_lead')`.
+ *
+ *  It has to be repeated here because the assistant does not go through a
+ *  controller. `runApproved` calls the service method directly, and the
+ *  services check *scope* — may this person see this customer — not role. A
+ *  branch manager can see every customer in their unit, so without this line
+ *  the assistant would happily write a signal into a customer file that the
+ *  API would have refused with a 403. The guard belongs in both places: the
+ *  tool list, so the model is never offered it, and `runApproved`, because an
+ *  approval arrives in a later request than the one that proposed it.
+ *
+ *  The admin keeps the write tools. They pass every role gate on the server
+ *  too — a technical account that still lands in the audit trail. */
+export function mayWrite(user: User): boolean {
+  return user.role !== 'bm'
 }
 
 export function metaOf(name: string): ToolMeta {
@@ -340,6 +362,12 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
     })
   }
 
+
+  /** A person who may not write is not shown the four write tools at all,
+   *  rather than being allowed to propose something that fails on approval.
+   *  A model that cannot see a tool cannot offer it, which is a better
+   *  experience than a card that turns into an error when it is pressed. */
+  const writable = mayWrite(user)
 
   return [
     /* ── Who, when, and what the words mean ───────────────────────────── */
@@ -699,7 +727,13 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
     }),
 
     /* ── Bốn việc phải xin phép ───────────────────────────────────────── */
+    ...(writable ? writeTools() : []),
+  ]
 
+  /** The four that stop for a person, kept together so the role gate is one
+   *  line at the call site rather than a condition wrapped round eighty. */
+  function writeTools() {
+    return [
     ask({
       name: 'record_signal',
       description:
@@ -765,7 +799,8 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
         blockerNote: z.string().max(1000).optional(),
       }),
     }),
-  ]
+    ]
+  }
 }
 
 /** Runs a write tool for real, once a person has approved it.
@@ -782,6 +817,12 @@ export async function runApproved(
 ): Promise<unknown> {
   const { customers: _customers, opportunities, signals } = services
   void _customers
+
+  /** Checked again here, and not only in the tool list. The approval comes
+   *  back in a later request, and the only thing linking it to the proposal is
+   *  a row in `tool_calls` — a role that changed in between, or a call raised
+   *  before this guard existed, would otherwise write. */
+  if (!mayWrite(user)) throw new ForbiddenException('role_may_not_write')
 
   switch (name) {
     case 'record_signal':
