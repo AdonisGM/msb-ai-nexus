@@ -8,7 +8,7 @@ import { TargetsService } from '../targets/targets.service'
 import { UsersService } from '../users/users.service'
 import { BLOCKER_CODES, PRODUCTS, signals, type User } from '../db/schema'
 import { closeDb, resetDb, testDb } from '../test/db'
-import { makeBranch, makeCustomer, makeOpportunity } from '../test/factories'
+import { makeBranch, makeCustomer, makeOpportunity, makeUser } from '../test/factories'
 import { buildTools, metaOf, TOOL_META, type ToolSink } from './tools'
 
 /** The assistant reaches the same data through the same services as a request
@@ -316,5 +316,106 @@ describe('the tool register', () => {
    *  to `auto` would turn a future mistake into a silent write. */
   it('treats an unknown tool as one that must be asked about', () => {
     expect(metaOf('drop_everything').risk).toBe('ask')
+  })
+})
+
+/** One person carries three identifiers and `whoami` hands back all of them,
+ *  so the model has three ways to name the same colleague and picks the wrong
+ *  one often enough to matter. What made it worth fixing is that the wrong one
+ *  was not an error: the filter matched nothing, and the turn ended by telling
+ *  a salesperson they had no leads at all. */
+describe('naming somebody in a filter', () => {
+  async function team() {
+    const b = await makeBranch()
+    const hai = await makeUser({
+      unitId: b.unit.id,
+      role: 'sale',
+      segment: 'rb',
+      managerId: b.leadRb.id,
+      code: 'SALE-RB-09',
+      employeeCode: 'NV0006',
+      name: 'Hải',
+    })
+    const customer = await makeCustomer({ ownerId: hai.id, segment: 'rb' })
+    await makeOpportunity({ customerId: customer.id, ownerId: hai.id, segment: 'rb' })
+    return { ...b, hai }
+  }
+
+  it('takes the id', async () => {
+    const b = await team()
+    expect((await toolset(b.leadRb)('get_funnel', { ownerId: b.hai.id })).leads).toBe(1)
+  })
+
+  /** The payroll number, which is the one the model actually reached for. */
+  it('takes the employee code', async () => {
+    const b = await team()
+    expect((await toolset(b.leadRb)('get_funnel', { ownerId: 'NV0006' })).leads).toBe(1)
+  })
+
+  it('takes the login code, whatever the case', async () => {
+    const b = await team()
+    expect((await toolset(b.leadRb)('get_funnel', { ownerId: 'sale-rb-09' })).leads).toBe(1)
+  })
+
+  it('takes a name when only one person answers to it', async () => {
+    const b = await team()
+    expect((await toolset(b.leadRb)('get_funnel', { ownerId: 'Hải' })).leads).toBe(1)
+  })
+
+  /** Two Hảis in a branch is ordinary. Picking either would be a wrong answer
+   *  wearing the shape of a right one. */
+  it('refuses a name two people share', async () => {
+    const b = await team()
+    await makeUser({
+      unitId: b.unit.id,
+      role: 'sale',
+      segment: 'rb',
+      managerId: b.leadRb.id,
+      name: 'Hải',
+    })
+
+    const answer = await toolset(b.leadRb)('get_funnel', { ownerId: 'Hải' })
+    expect(answer.error).toMatch(/get_org_tree/)
+    expect(answer.leads).toBeUndefined()
+  })
+
+  /** The point of the whole exercise: say so, rather than hand back a report
+   *  of zero that reads exactly like a quiet month. */
+  it('fails loudly on something that names nobody', async () => {
+    const b = await team()
+
+    const answer = await toolset(b.leadRb)('get_funnel', { ownerId: 'NV9999' })
+    expect(answer.error).toMatch(/get_org_tree/)
+    expect(answer.leads).toBeUndefined()
+  })
+
+  /** Resolving an identifier is not permission to use it. The scope still
+   *  runs on top, so a salesperson naming a colleague gets an empty report
+   *  rather than their colleague's. */
+  it('still refuses a colleague the caller may not see', async () => {
+    const b = await team()
+
+    const answer = await toolset(b.saleRb)('get_funnel', { ownerId: 'NV0006' })
+    expect(answer.error).toBeUndefined()
+    expect(answer.leads).toBe(0)
+  })
+
+  /** A person outside the caller's branch does not resolve at all — the org
+   *  chart it reads is their own unit's. */
+  it('does not resolve somebody from another branch', async () => {
+    const b = await team()
+    const stranger = await makeUser({ role: 'sale', name: 'Người Lạ' })
+
+    const answer = await toolset(b.leadRb)('get_funnel', { ownerId: stranger.id })
+    expect(answer.error).toMatch(/get_org_tree/)
+  })
+
+  it('reaches the searches too, not only the reports', async () => {
+    const b = await team()
+
+    const found = (await toolset(b.leadRb)('search_opportunities', { ownerId: 'NV0006' })) as {
+      total: number
+    }
+    expect(found.total).toBe(1)
   })
 })

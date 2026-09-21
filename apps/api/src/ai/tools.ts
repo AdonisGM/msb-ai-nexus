@@ -5,7 +5,7 @@ import { OpportunitiesService } from '../opportunities/opportunities.service'
 import { ReportsService } from '../reports/reports.service'
 import { SignalsService } from '../signals/signals.service'
 import { TargetsService } from '../targets/targets.service'
-import { UsersService } from '../users/users.service'
+import { UsersService, type TreeNode } from '../users/users.service'
 import {
   BLOCKER_CODES,
   OUTCOMES,
@@ -163,8 +163,61 @@ const RangeInput = z.object({
     .optional()
     .describe('Ngày kết thúc, YYYY-MM-DD. Gọi today trước nếu cần biết hôm nay.'),
   segment: z.enum(SEGMENTS).optional().describe('sse = doanh nghiệp nhỏ, rb = cá nhân'),
-  ownerId: z.string().optional().describe('Chỉ tính sổ của một nhân viên. Lấy id từ get_org_tree.'),
+  ownerId: z
+    .string()
+    .optional()
+    .describe('Chỉ tính sổ của một nhân viên. Id dạng usr_… từ whoami hoặc get_org_tree.'),
 })
+
+/** Turns whatever the model called somebody into the id the services want.
+ *
+ *  One person carries three identifiers, and `whoami` hands back all three:
+ *  `usr_sale_rb_01`, the login code `SALE-RB-01`, and the payroll number
+ *  `NV0006`. The model picks the wrong one often enough to matter, and the
+ *  failure is invisible — an unknown `ownerId` is not an error anywhere
+ *  downstream, it simply matches no rows. The turn then ends by telling a
+ *  salesperson they have no open leads when they have thirty.
+ *
+ *  So take any of the three, and a name when it is unambiguous. Anything else
+ *  throws, which `read` hands back as a readable error the model can act on —
+ *  far better than an empty page it will believe.
+ *
+ *  Scoped to the caller's own branch because `tree` is: an id from somewhere
+ *  else does not resolve here, and the services would refuse it anyway. */
+function ownerResolver(users: UsersService, user: User) {
+  /** One read per turn at most. `buildTools` is already per request, so the
+   *  cache cannot outlive the person it was built for. */
+  let loading: Promise<TreeNode[]> | null = null
+
+  const flatten = (nodes: TreeNode[]): TreeNode[] =>
+    nodes.flatMap((node) => [node, ...flatten(node.reports)])
+
+  return async (value?: string): Promise<string | undefined> => {
+    if (!value) return undefined
+
+    loading ??= users.tree(user)
+    const people = flatten(await loading)
+    const want = value.trim().toLowerCase()
+
+    const byId = people.find((person) =>
+      [person.id, person.code, person.employeeCode].some((key) => key?.toLowerCase() === want),
+    )
+    if (byId) return byId.id
+
+    /** A name only when exactly one person answers to it. Two Hảis in a branch
+     *  is ordinary, and picking either would be a wrong answer wearing the
+     *  shape of a right one. */
+    const byName = people.filter((person) => person.name.toLowerCase() === want)
+    if (byName.length === 1) return byName[0].id
+
+    throw new Error(
+      byName.length > 1
+        ? `Có ${byName.length} người tên "${value}" trong chi nhánh. Gọi get_org_tree rồi dùng id.`
+        : `Không có ai ứng với "${value}". Nhận id (usr_…), mã đăng nhập (SALE-…) ` +
+          `hoặc mã nhân viên (NV…). Gọi get_org_tree để lấy danh sách.`,
+    )
+  }
+}
 
 /** How many rows a tool may hand back.
  *
@@ -213,6 +266,7 @@ function trimPage<T, R>(
  *  or force the caller to pass an id the model could tamper with. */
 export function buildTools(services: Services, user: User, sink: ToolSink = () => {}) {
   const { customers, opportunities, signals, reports, users, targets } = services
+  const ownerIdOf = ownerResolver(users, user)
 
   /** One wrapper for every tool below.
    *
@@ -436,6 +490,7 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
       run: async (input) => {
         const page = await customers.list(user, {
           ...input,
+          ownerId: await ownerIdOf(input.ownerId),
           pageSize: input.pageSize ?? PAGE.default,
         })
         return {
@@ -512,6 +567,7 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
       run: async (input) => {
         const page = await opportunities.list(user, {
           ...input,
+          ownerId: await ownerIdOf(input.ownerId),
           pageSize: input.pageSize ?? PAGE.default,
         })
         return trimPage(page, (row) => ({
@@ -557,7 +613,8 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
         'so ngưỡng, còn thiếu bao nhiêu deal, và bước rơi nhiều nhất. Kèm cách chia lead ' +
         'thành 5 phần không chồng nhau.',
       inputSchema: RangeInput,
-      run: async (input) => reports.funnel(user, input),
+      run: async (input) =>
+        reports.funnel(user, { ...input, ownerId: await ownerIdOf(input.ownerId) }),
     }),
 
     read({
@@ -566,7 +623,8 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
         'Kết quả theo từng tháng: chốt và thất bại theo ngày chốt, lead nhận theo tháng ' +
         'nhận, chỉ tiêu tháng và phần trăm hoàn thành.',
       inputSchema: RangeInput,
-      run: async (input) => reports.monthly(user, input),
+      run: async (input) =>
+        reports.monthly(user, { ...input, ownerId: await ownerIdOf(input.ownerId) }),
     }),
 
     read({
@@ -575,7 +633,8 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
       inputSchema: RangeInput.extend({
         by: z.enum(['product', 'blocker', 'segment']),
       }),
-      run: async ({ by, ...range }) => reports.breakdown(user, range, by),
+      run: async ({ by, ...range }) =>
+        reports.breakdown(user, { ...range, ownerId: await ownerIdOf(range.ownerId) }, by),
     }),
 
     read({
@@ -584,14 +643,16 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
         'Một dòng cho mỗi nhân viên: phễu của họ, tỷ lệ chốt, và ba hàng chờ — quá hạn, ' +
         'im lặng, chưa ai gọi.',
       inputSchema: RangeInput,
-      run: async (input) => reports.byOwner(user, input),
+      run: async (input) =>
+        reports.byOwner(user, { ...input, ownerId: await ownerIdOf(input.ownerId) }),
     }),
 
     read({
       name: 'get_by_team',
       description: 'Một dòng cho mỗi nhóm, gộp theo trưởng nhóm.',
       inputSchema: RangeInput,
-      run: async (input) => reports.byTeam(user, input),
+      run: async (input) =>
+        reports.byTeam(user, { ...input, ownerId: await ownerIdOf(input.ownerId) }),
     }),
 
     /* ── Bốn việc phải xin phép ───────────────────────────────────────── */
