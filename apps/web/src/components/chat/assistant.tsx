@@ -822,13 +822,23 @@ function Thread({
   }, [rows, echo, live?.text, live?.thinking, live?.tools.length, failed])
 
   return (
+    /** The same fine grain the app's frame and the sign-in screen carry, laid
+     *  under the messages so the conversation reads as a surface rather than a
+     *  flat panel. Outside the scroller, so it stays put while the text moves
+     *  over it instead of scrolling away after the first screenful. */
+    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div
+      aria-hidden
+      className="grain pointer-events-none absolute inset-0"
+      style={{ opacity: 'var(--grain)' }}
+    />
     <div
       ref={scroller}
       onScroll={(event) => {
         const el = event.currentTarget
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
       }}
-      className="flex min-h-0 flex-1 flex-col overflow-auto px-3 py-3.5"
+      className="relative flex min-h-0 flex-1 flex-col overflow-auto px-3 py-3.5"
     >
       <div className={cx('flex w-full flex-1 flex-col gap-3', wide && 'mx-auto max-w-[820px] px-2 py-2')}>
       {rows.length === 0 && !live && !echo ? (
@@ -894,6 +904,7 @@ function Thread({
         </div>
       ) : null}
       </div>
+    </div>
     </div>
   )
 }

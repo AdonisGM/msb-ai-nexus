@@ -125,12 +125,22 @@ function elements(inverted: boolean): Components {
     /** Anything the model links to is outside this app. Opened in a new
      *  tab with the opener severed, because the destination came out of a
      *  model and nothing downstream has checked it. */
+    /** In the colour of the text around it, not the app's link colour.
+     *  Every `<a>` is `var(--accent)` globally — right for menu items, wrong
+     *  here: the person's own bubble *is* accent, so an email the Markdown
+     *  turned into a link vanished into it, leaving a gap in the sentence.
+     *  The underline, mixed from the text colour, is what marks it as a link
+     *  on either background. */
     a: ({ children, href }) => (
       <a
         href={href}
         target="_blank"
         rel="noreferrer noopener"
-        className="underline decoration-line2 underline-offset-2"
+        style={{
+          color: 'inherit',
+          textDecorationColor: 'color-mix(in oklch, currentColor 45%, transparent)',
+        }}
+        className="underline underline-offset-2"
       >
         {children}
       </a>
