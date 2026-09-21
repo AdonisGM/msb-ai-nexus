@@ -1,35 +1,41 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
-import { digest, hasPersonalNumber } from './web-search'
+import { digest, hasIdOrAccountNumber } from './web-search'
 
 /** The two pure halves of a search: the check on what may be sent, and the
  *  reading of what came back. The request itself is Anthropic's. */
 
-describe('a personal number in a query', () => {
+describe('an ID or account number in a query', () => {
   it.each([
-    ['a mobile number', 'anh Hùng 0912345678'],
-    ['a spaced mobile number', 'anh Hùng 0912 345 678'],
-    ['a dotted mobile number', '0912.345.678'],
-    ['an international number', '+84 912 345 678'],
     ['a CCCD', 'CCCD 001203004567'],
+    ['a spaced CCCD', '001 203 004 567'],
     ['an account number', 'stk 19036548801012'],
+    ['a nine-digit old ID', 'CMND 012345678'],
   ])('catches %s', (_, query) => {
-    expect(hasPersonalNumber(query)).toBe(true)
+    expect(hasIdOrAccountNumber(query)).toBe(true)
   })
 
+  /** Allowed by the branch's choice: people and companies are looked up by
+   *  phone, on the social networks first. */
   it.each([
+    ['a mobile number', 'anh Hùng 0912345678'],
+    ['a spaced mobile number', '"0912 345 678" facebook'],
+    ['a dotted mobile number', '0912.345.678'],
+    ['an international number', '+84 912 345 678'],
+    ['a Hanoi landline', '024 3736 1234'],
+    ['an email', 'an.nguyen@congty.vn'],
     ['a company name', 'Công ty CP Sản xuất Đại Dương'],
     ['a year', 'thông tư NHNN 2026'],
     ['a price', 'giá thép 15.500.000 đồng'],
-    ['a short code', 'mã ngành 4661'],
   ])('lets through %s', (_, query) => {
-    expect(hasPersonalNumber(query)).toBe(false)
+    expect(hasIdOrAccountNumber(query)).toBe(false)
   })
 })
 
 describe('reading a search reply', () => {
   const reply = {
     content: [
+      { type: 'text', text: 'Tôi sẽ tìm trên mạng xã hội trước.', citations: null },
       { type: 'server_tool_use', id: 's1', name: 'web_search', input: { query: 'x' } },
       {
         type: 'web_search_tool_result',
@@ -49,6 +55,10 @@ describe('reading a search reply', () => {
       },
     ],
   } as unknown as Pick<Anthropic.Message, 'content'>
+
+  it('drops what the model said before searching', () => {
+    expect(digest('q', reply).summary).not.toContain('Tôi sẽ tìm')
+  })
 
   it('joins the text split at citations back into one paragraph', () => {
     expect(digest('q', reply).summary).toBe('Theo báo B, công ty mở nhà máy mới năm 2026.')

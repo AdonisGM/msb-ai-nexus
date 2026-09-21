@@ -30,22 +30,31 @@ export type WebSearchResult = {
 const MAX_SOURCES = 6
 
 /** A few searches are enough to answer one question; more is the model
- *  rummaging, paid for per search. */
-const MAX_SEARCHES = 3
+ *  rummaging, paid for per search. Four rather than three because a search by
+ *  phone or email tries the social networks before the open web. */
+const MAX_SEARCHES = 4
 
 const SEARCH_PROMPT = `Bạn tra cứu thông tin công khai trên mạng cho nhân viên một ngân hàng.
 
-Tìm theo đúng yêu cầu, rồi tóm tắt những gì các trang nói trong 3-6 câu tiếng Việt. Chỉ nói điều có trong kết quả tìm kiếm; không có thì nói thẳng là không tìm thấy. Ghi rõ mốc thời gian nếu trang có. Không suy đoán, không đưa lời khuyên, không bịa số.`
+Nếu yêu cầu có số điện thoại hoặc email, tìm trên mạng xã hội TRƯỚC — Facebook, LinkedIn, TikTok, Zalo OA, Instagram — bằng cách thêm "site:facebook.com", "site:linkedin.com"… vào truy vấn, đặt số điện thoại hoặc email trong ngoặc kép. Chưa có gì mới tìm trên web chung (trang doanh nghiệp, danh bạ, tin rao, báo).
 
-/** A phone, ID card or account number written into a query.
+Tìm theo đúng yêu cầu, rồi tóm tắt những gì các trang nói trong 3-6 câu tiếng Việt, nói rõ thông tin đến từ trang nào. Chỉ nói điều có trong kết quả tìm kiếm; không có thì nói thẳng là không tìm thấy. Một trang trùng số điện thoại chưa chắc là cùng người — nói rõ mức chắc chắn. Ghi rõ mốc thời gian nếu trang có. Không suy đoán, không đưa lời khuyên, không bịa số.`
+
+/** An ID card or account number written into a query.
  *
- *  Checked on the proposal, so the model is told to rephrase before a card is
- *  ever drawn. Nine digits or more, ignoring the spaces, dots and dashes people
- *  put in numbers — which catches a phone number, a CCCD and an account number,
- *  and lets a year or a price through. The card is still the real guard; this
- *  is for the case where the person approves without reading closely. */
-export function hasPersonalNumber(query: string): boolean {
-  return /\d{9,}/.test(query.replace(/[\s.\-()+]/g, ''))
+ *  Phone numbers and emails are allowed — the branch chose to let the
+ *  assistant look people and companies up by them, on the social networks
+ *  first. What stays refused is the kind of number that finds nothing useful
+ *  and should never leave the bank: a 12-digit CCCD, an account number.
+ *
+ *  Separators are ignored, so "0912 345 678" is read as the phone it is. A
+ *  run of nine or more digits passes only if it has the shape of a Vietnamese
+ *  phone: 0 plus nine or ten digits, or 84 plus nine or ten. Everything else
+ *  that long is treated as an ID or an account. The card is still the real
+ *  guard; this catches the approval pressed without reading. */
+export function hasIdOrAccountNumber(query: string): boolean {
+  const runs = query.replace(/[\s.\-()]/g, '').match(/\+?\d{9,}/g) ?? []
+  return runs.some((run) => !/^(0|\+?84)\d{9,10}$/.test(run))
 }
 
 export async function searchWeb(query: string): Promise<WebSearchResult> {
@@ -89,8 +98,14 @@ export function digest(query: string, reply: Pick<Anthropic.Message, 'content'>)
       }
     } else if (block.type === 'server_tool_use') {
       searches += 1
-    } else if (block.type === 'web_search_tool_result' && Array.isArray(block.content)) {
-      for (const hit of block.content) found.push({ title: hit.title, url: hit.url })
+      /** Words before a search are the model announcing it ("Tôi sẽ tìm…"),
+       *  not findings. Only what follows the last search is the answer. */
+      words.length = 0
+    } else if (block.type === 'web_search_tool_result') {
+      words.length = 0
+      if (Array.isArray(block.content)) {
+        for (const hit of block.content) found.push({ title: hit.title, url: hit.url })
+      }
     }
   }
 

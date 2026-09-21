@@ -559,21 +559,33 @@ describe('searching the web', () => {
 
   /** The card is the real guard; this catches the approval pressed without
    *  reading, and a row stored before the schema refused it. */
-  it('refuses to send a phone or ID number, even when approved', async () => {
+  /** The branch chose to allow searching people and companies by phone and
+   *  email. An ID card or account number still never leaves. */
+  it('searches by phone number and email once approved', async () => {
+    const b = await branch()
+
+    await runApproved(services, b.saleRb, 'search_web', { query: '"0912 345 678"', reason: 'x' })
+    await runApproved(services, b.saleRb, 'search_web', { query: '"an@congty.vn"', reason: 'x' })
+
+    expect(searched).toEqual(['"0912 345 678"', '"an@congty.vn"'])
+  })
+
+  it('refuses to send an ID card or account number, even when approved', async () => {
     const b = await branch()
 
     await expect(
-      runApproved(services, b.saleRb, 'search_web', { query: 'khách 0912 345 678', reason: 'x' }),
-    ).rejects.toThrow('search_query_has_personal_number')
+      runApproved(services, b.saleRb, 'search_web', { query: 'CCCD 001203004567', reason: 'x' }),
+    ).rejects.toThrow('search_query_has_id_number')
     expect(searched).toEqual([])
   })
 
-  it('tells the model to rephrase a query with a personal number', async () => {
+  it('tells the model to rephrase a query with an ID number, and lets a phone through', async () => {
     const b = await branch()
     const tool = buildTools(services, b.saleRb).find((candidate) => candidate.name === 'search_web')
     const schema = (tool as unknown as { parse: (input: unknown) => unknown }).parse
 
     expect(() => schema({ query: 'CCCD 001203004567', reason: 'cần tra' })).toThrow()
+    expect(() => schema({ query: '0912345678 facebook', reason: 'cần tra' })).not.toThrow()
     expect(() => schema({ query: 'Công ty Đại Dương 2026', reason: 'cần tra' })).not.toThrow()
   })
 })

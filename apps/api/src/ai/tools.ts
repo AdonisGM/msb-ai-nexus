@@ -15,7 +15,7 @@ import {
   STAGES,
   type User,
 } from '../db/schema'
-import { hasPersonalNumber, searchWeb } from './web-search'
+import { hasIdOrAccountNumber, searchWeb } from './web-search'
 
 /** What the assistant may reach for.
  *
@@ -797,11 +797,12 @@ ${
       description:
         'Tìm thông tin CÔNG KHAI trên mạng: tin tức về một doanh nghiệp (mở rộng, trúng thầu, ' +
         'kiện tụng, thay đổi lãnh đạo), thông tin đăng ký doanh nghiệp, ngành nghề, quy định ' +
-        'và thông tư mới. Dùng khi câu hỏi cần thứ hệ thống không có.\n\n' +
+        'và thông tư mới, hoặc một cá nhân hay doanh nghiệp theo số điện thoại, email. Dùng ' +
+        'khi câu hỏi cần thứ hệ thống không có.\n\n' +
+        'Khi người dùng nhắc tới một cá nhân hay doanh nghiệp có số điện thoại hoặc email, ' +
+        'đưa số điện thoại / email đó vào `query` — việc tìm sẽ ưu tiên mạng xã hội trước.\n\n' +
         'Từ khoá sẽ được gửi ra dịch vụ tìm kiếm bên ngoài, nên:\n' +
-        '- Chỉ dùng tên doanh nghiệp, ngành, chủ đề. KHÔNG BAO GIỜ đưa thông tin cá nhân của ' +
-        'khách: số điện thoại, CCCD, số tài khoản, địa chỉ nhà, hay tên khách cá nhân kèm ' +
-        'thông tin nhận dạng.\n' +
+        '- KHÔNG BAO GIỜ đưa CCCD, số tài khoản hay địa chỉ nhà vào từ khoá.\n' +
         '- Kết quả là nguồn bên ngoài, chưa kiểm chứng. Không bao giờ dùng lãi suất, phí hay ' +
         'điều kiện tìm được thay cho sản phẩm của ngân hàng mình.',
       inputSchema: z.object({
@@ -809,9 +810,9 @@ ${
           .string()
           .min(2)
           .max(200)
-          .refine((query) => !hasPersonalNumber(query), {
+          .refine((query) => !hasIdOrAccountNumber(query), {
             message:
-              'Từ khoá có dãy số giống số điện thoại, CCCD hoặc số tài khoản. Bỏ nó đi rồi gọi lại.',
+              'Từ khoá có dãy số giống CCCD hoặc số tài khoản. Bỏ nó đi rồi gọi lại — số điện thoại thì được.',
           })
           .describe('Từ khoá tìm kiếm, đúng như sẽ gửi đi'),
         reason: z
@@ -923,7 +924,7 @@ export async function runApproved(
    *  the rule that keeps a branch manager read-only does not apply to it. */
   if (name === 'search_web') {
     const query = String(input.query ?? '')
-    if (hasPersonalNumber(query)) throw new Error('search_query_has_personal_number')
+    if (hasIdOrAccountNumber(query)) throw new Error('search_query_has_id_number')
     return searchWeb(query)
   }
 
