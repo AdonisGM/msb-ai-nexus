@@ -24,6 +24,7 @@ import { makeBranch, makeCustomer, makeOpportunity, makeUser } from '../test/fac
 import { eq } from 'drizzle-orm'
 import {
   buildTools,
+  fillerIn,
   metaOf,
   requestTools,
   runApproved,
@@ -757,5 +758,61 @@ describe('strict tools', () => {
       },
       required: ['n'],
     })
+  })
+})
+
+/** `ask_choice` is drawn as buttons straight from its input, so a filler call
+ *  — seen live: "placeholder" with buttons "a" and "b" — would sit in the
+ *  thread meaning nothing. It is refused and handed back as an error. */
+describe('a question back that is not a question', () => {
+  const real = {
+    question: 'Bạn muốn xem cơ hội nào?',
+    options: [
+      { label: 'Quá hạn', ask: 'Cơ hội nào đang quá hạn?' },
+      { label: 'Chưa liên hệ', ask: 'Cơ hội nào chưa ai liên hệ?' },
+    ],
+  }
+
+  it('refuses the placeholder call that was seen live', async () => {
+    const b = await branch()
+    const answer = await toolset(b.saleRb)('ask_choice', {
+      question: 'placeholder',
+      options: [
+        { label: 'a', ask: 'a' },
+        { label: 'b', ask: 'b' },
+      ],
+    })
+    expect(answer.error).toMatch(/câu hỏi thật/)
+  })
+
+  it('draws a real question as it was asked', async () => {
+    const b = await branch()
+    const answer = await toolset(b.saleRb)('ask_choice', real)
+    expect(answer.error).toBeUndefined()
+    expect(answer.options).toEqual(real.options)
+  })
+
+  it.each([
+    ['a one-letter option', { ...real, options: [{ label: 'a', ask: 'a' }, real.options[1]] }],
+    ['a stub question', { ...real, question: '...' }],
+    ['two buttons that send the same thing', {
+      ...real,
+      options: [real.options[0], { label: 'Khác', ask: 'Cơ hội nào đang quá hạn?' }],
+    }],
+  ])('refuses %s', (_, input) => {
+    expect(fillerIn(input)).not.toBeNull()
+  })
+
+  /** Short labels are fine when the sentence they send is whole. */
+  it('lets a short honest yes/no through', () => {
+    expect(
+      fillerIn({
+        question: 'Ghi tín hiệu này vào hồ sơ khách?',
+        options: [
+          { label: 'Có', ask: 'Có, ghi tín hiệu này vào hồ sơ.' },
+          { label: 'Không', ask: 'Không, chưa cần ghi.' },
+        ],
+      }),
+    ).toBeNull()
   })
 })

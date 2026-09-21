@@ -295,6 +295,35 @@ export function recordResolver(services: Pick<Services, 'customers' | 'opportuni
   }
 }
 
+/** Why an `ask_choice` call is filler rather than a question, or null.
+ *
+ *  Deliberately narrow — it catches the shapes that are never a real question
+ *  (a placeholder word, one-letter options, two buttons that send the same
+ *  thing) and leaves alone short honest ones like "Có" / "Không", whose `ask`
+ *  is the full sentence. */
+export function fillerIn(input: {
+  question: string
+  options: Array<{ label: string; ask: string }>
+}): string | null {
+  const PLACEHOLDER = /^(placeholder|test|todo|tbd|x+|\.+|-+|\?+|a|b|abc|lorem.*)$/i
+  const question = input.question.trim()
+
+  if (question.length < 5 || PLACEHOLDER.test(question)) {
+    return 'ask_choice cần một câu hỏi thật. Không cần hỏi lại thì đừng gọi tool này — trả lời luôn.'
+  }
+  for (const option of input.options) {
+    const ask = option.ask.trim()
+    if (ask.length < 4 || PLACEHOLDER.test(ask) || PLACEHOLDER.test(option.label.trim())) {
+      return 'Mỗi lựa chọn cần nhãn ngắn và `ask` là câu hỏi đầy đủ sẽ được gửi đi.'
+    }
+  }
+  const asks = input.options.map((option) => option.ask.trim().toLowerCase())
+  if (new Set(asks).size !== asks.length) {
+    return 'Hai lựa chọn đang gửi cùng một câu. Mỗi nút phải dẫn tới một câu hỏi khác nhau.'
+  }
+  return null
+}
+
 /** How many rows a tool may hand back.
  *
  *  Small, because every row goes into the next request and is paid for again
@@ -532,13 +561,24 @@ ${
           .max(4),
       }),
       /** Returns its own input: the screen draws the buttons from the stored
-       *  result, so what is rendered is exactly what the model asked for. */
-      run: async (input) => ({
-        ...input,
-        note:
+       *  result, so what is rendered is exactly what the model asked for.
+       *
+       *  Which is why a filler call is refused rather than drawn. Seen live:
+       *  a turn opened with `question: "placeholder"` and two buttons reading
+       *  "a" and "b", then answered anyway — the buttons would have sat in the
+       *  thread meaning nothing. Refused, the call comes back to the model as
+       *  an error it can read, and the screen draws no buttons for a failed
+       *  call. */
+      run: async (input) => {
+        const problem = fillerIn(input)
+        if (problem) throw new Error(problem)
+        return {
+          ...input,
+          note:
           'Đã hiện câu hỏi và các nút bấm cho người dùng. KẾT THÚC LƯỢT TẠI ĐÂY — ' +
           'không viết thêm câu nào nữa, kể cả một lời mời chọn. Họ đã thấy nút rồi.',
-      }),
+        }
+      },
     }),
 
     read({
