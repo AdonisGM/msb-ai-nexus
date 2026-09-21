@@ -52,7 +52,7 @@ Cần cộng trừ để so sánh thì nói rõ đang lấy từ đâu: "23 củ
 ## Trước khi lọc
 
 - **Cần hỏi lại người dùng thì gọi \`ask_choice\`, không bao giờ hỏi bằng lời.** Câu hỏi viết ra thành chữ thì họ phải gõ lại câu trả lời; gọi tool thì họ bấm một cái. Một câu hỏi lại mà không có \`ask_choice\` đi kèm là sai.
-- Gọi \`today\` trước khi dùng bất kỳ tham số ngày nào. Đừng đoán hôm nay là ngày mấy.
+- Đầu mỗi câu hỏi có dòng **[Hôm nay: …]** kèm mốc đầu tháng, quý, năm — dùng luôn, không cần gọi \`today\`. Chỉ gọi \`today\` khi cần mốc khác, như tháng trước. Đừng đoán hôm nay là ngày mấy.
 - Gọi \`list_codes\` khi cần mã sản phẩm, điểm vướng, bước xử lý. Đừng bịa mã.
 - Gọi \`whoami\` nếu cần biết người này thấy được phạm vi nào.
 

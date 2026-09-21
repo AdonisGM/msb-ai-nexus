@@ -22,7 +22,15 @@ import { BLOCKER_CODES, opportunities, PRODUCTS, signals, type User } from '../d
 import { closeDb, resetDb, testDb } from '../test/db'
 import { makeBranch, makeCustomer, makeOpportunity, makeUser } from '../test/factories'
 import { eq } from 'drizzle-orm'
-import { buildTools, metaOf, runApproved, TOOL_META, type ToolSink } from './tools'
+import {
+  buildTools,
+  metaOf,
+  requestTools,
+  runApproved,
+  strictSchema,
+  TOOL_META,
+  type ToolSink,
+} from './tools'
 
 /** The assistant reaches the same data through the same services as a request
  *  does, so the rule that matters is that it reaches no further. These tests
@@ -691,5 +699,63 @@ describe('naming a record by its code', () => {
 
     const [row] = await testDb.select().from(opportunities).where(eq(opportunities.id, c.other.id))
     expect(row.nextAction).not.toBe('Không phải của tôi')
+  })
+})
+
+/** The arguments of a tool that stops for a person are what the card shows
+ *  and what the write runs with, so those tools are strict. Strict refuses
+ *  numeric bounds outright — found against the live API — so they are
+ *  stripped from what it sees and left to zod. */
+describe('strict tools', () => {
+  it('marks every tool that asks, and no read', async () => {
+    const b = await branch()
+    const tools = requestTools(services, b.saleRb) as Array<{ name: string; strict?: boolean }>
+
+    for (const tool of tools) {
+      if (!(tool.name in TOOL_META)) continue
+      expect(Boolean(tool.strict), tool.name).toBe(metaOf(tool.name).risk === 'ask')
+    }
+  })
+
+  it('sends no numeric bounds on a strict tool', async () => {
+    const b = await branch()
+    const draft = (requestTools(services, b.saleRb) as Array<{ name: string; input_schema: unknown }>)
+      .find((tool) => tool.name === 'draft_opportunity')!
+
+    const text = JSON.stringify(draft.input_schema)
+    expect(text).not.toMatch(/exclusiveMinimum|"maximum"|"minimum"/)
+    /** What strict does accept is kept. */
+    expect(text).toContain('"enum"')
+    expect(text).toContain('"maxLength"')
+  })
+
+  it('still refuses a value the bounds were there to stop', async () => {
+    const b = await branch()
+    const draft = buildTools(services, b.saleRb).find((tool) => tool.name === 'draft_opportunity')
+    const parse = (draft as unknown as { parse: (input: unknown) => unknown }).parse
+
+    expect(() =>
+      parse({ customerId: 'c', product: 'card', need: 'Mở thẻ', value: 0 }),
+    ).toThrow()
+  })
+
+  it('strips bounds at any depth and leaves everything else', () => {
+    expect(
+      strictSchema({
+        type: 'object',
+        properties: {
+          n: { type: 'integer', minimum: 1, maximum: 9, description: 'd' },
+          list: { type: 'array', items: { type: 'number', exclusiveMaximum: 5 } },
+        },
+        required: ['n'],
+      }),
+    ).toEqual({
+      type: 'object',
+      properties: {
+        n: { type: 'integer', description: 'd' },
+        list: { type: 'array', items: { type: 'number' } },
+      },
+      required: ['n'],
+    })
   })
 })

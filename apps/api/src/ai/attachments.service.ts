@@ -212,7 +212,12 @@ export function refOf(row: Attachment): AttachmentRef {
 }
 
 /** What the model is sent for a file. PDFs and text files go as documents so
- *  they carry their name; the model can then say which file it is reading. */
+ *  they carry their name; the model can then say which file it is reading.
+ *
+ *  Documents carry `citations`, so an answer about a contract points at the
+ *  page it came from and the person can check it — a figure read out of a
+ *  customer's paperwork is only as good as the line it can be found on.
+ *  Images cannot be cited; the API has no location inside a picture. */
 export function blockOf(row: Attachment, bytes: Buffer): Block {
   if (row.kind === 'image') {
     return {
@@ -229,6 +234,7 @@ export function blockOf(row: Attachment, bytes: Buffer): Block {
     return {
       type: 'document',
       title: row.filename,
+      citations: { enabled: true },
       source: { type: 'base64', media_type: 'application/pdf', data: bytes.toString('base64') },
     }
   }
@@ -236,6 +242,7 @@ export function blockOf(row: Attachment, bytes: Buffer): Block {
   return {
     type: 'document',
     title: row.filename,
+    citations: { enabled: true },
     source: { type: 'text', media_type: 'text/plain', data: bytes.toString('utf8') },
   }
 }

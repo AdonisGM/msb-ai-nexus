@@ -460,8 +460,9 @@ ${
     read({
       name: 'today',
       description:
-        'Hôm nay là ngày nào, và mốc đầu/cuối của tháng, quý, năm hiện tại. ' +
-        'Gọi tool này trước khi dùng bất kỳ tham số ngày nào — đừng tự đoán.',
+        'Hôm nay là ngày nào, và mốc đầu/cuối của tháng, quý, năm hiện tại, tháng trước. ' +
+        'Thường KHÔNG cần: ngày hôm nay và mốc tháng/quý/năm đã có ở dòng [Hôm nay: …] đầu ' +
+        'câu hỏi. Chỉ gọi khi cần mốc tháng trước hoặc không thấy dòng đó.',
       inputSchema: z.object({}),
       run: async () => {
         const now = new Date()
@@ -1011,7 +1012,15 @@ export const TOOL_SEARCH = {
 export function requestTools(services: Services, user: User, sink?: ToolSink) {
   const built = buildTools(services, user, sink).map((tool) => {
     const meta = metaOf(tool.name)
-    return meta.deferred ? Object.assign(tool, { defer_loading: true }) : tool
+    if (meta.deferred) Object.assign(tool, { defer_loading: true })
+    /** Strict on the tools that stop for a person. Their arguments are what
+     *  the approval card shows and what the write runs with, so they are the
+     *  ones where "almost matches the schema" is not good enough. */
+    if (meta.risk === 'ask') {
+      const schema = (tool as { input_schema?: unknown }).input_schema
+      Object.assign(tool, { strict: true, input_schema: strictSchema(schema) })
+    }
+    return tool
   })
 
   const loaded = built.filter((tool) => !metaOf(tool.name).deferred)
@@ -1020,5 +1029,33 @@ export function requestTools(services: Services, user: User, sink?: ToolSink) {
 
   return [TOOL_SEARCH, ...built]
 }
+
+/** A schema the strict mode will accept.
+ *
+ *  Strict refuses numeric bounds outright — "For 'integer' type, properties
+ *  exclusiveMinimum, maximum are not supported" — and zod writes both for any
+ *  `.int().positive()`. They are dropped from what the API sees; the zod
+ *  schema still checks them when the tool runs, so a zero or negative value is
+ *  refused all the same, just one step later. String lengths, patterns and
+ *  enums are accepted as they are, measured against the live API. */
+export function strictSchema<T>(schema: T): T {
+  if (Array.isArray(schema)) return schema.map(strictSchema) as T
+  if (!schema || typeof schema !== 'object') return schema
+
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
+    if (NUMERIC_BOUNDS.has(key)) continue
+    out[key] = strictSchema(value)
+  }
+  return out as T
+}
+
+const NUMERIC_BOUNDS = new Set([
+  'minimum',
+  'maximum',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'multipleOf',
+])
 
 export type BuiltTools = ReturnType<typeof buildTools>

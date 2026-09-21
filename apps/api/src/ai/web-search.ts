@@ -2,6 +2,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { startObservation } from '@langfuse/tracing'
 import { claude, SEARCH_MODEL } from './claude'
 import { LANGFUSE_ENABLED } from './tracing'
+import { usageFor } from './usage'
 
 /** Looking something up outside the system, once a person has said yes.
  *
@@ -136,10 +137,9 @@ function trace(query: string, reply: Anthropic.Message, result: WebSearchResult)
       model: reply.model,
       input: query,
       output: result,
-      usageDetails: {
-        input: reply.usage.input_tokens,
-        output: reply.usage.output_tokens,
-      },
+      usageDetails: usageFor(reply.usage),
+      /** The per-search fee is billed on top of tokens and Langfuse has no
+       *  price for it, so the count is kept here to be multiplied by hand. */
       metadata: { searches: result.searches },
     },
     { asType: 'generation' },

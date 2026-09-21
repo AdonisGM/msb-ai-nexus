@@ -45,8 +45,21 @@ export type ContextBlock = {
   label: string
 }
 
+/** Where in an attached document a sentence came from. PDFs cite pages,
+ *  text files cite characters. */
+export type Citation =
+  | {
+      type: 'page_location'
+      cited_text: string
+      document_title: string | null
+      start_page_number: number
+      end_page_number: number
+    }
+  | { type: 'char_location'; cited_text: string; document_title: string | null }
+  | { type: string; cited_text?: string; document_title?: string | null }
+
 export type Block =
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; citations?: Citation[] | null }
   | Attachment
   | ContextBlock
   | { type: 'tool_use'; id: string; name: string; input: unknown }
@@ -232,17 +245,51 @@ export function filesOf(message: ChatMessage): Attachment[] {
  *  runner built between them. Neither is for reading: the first is drawn as a
  *  card from `toolCalls`, the second is the raw JSON the model saw. */
 export function textOf(message: ChatMessage): string {
-  return message.content
-    .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
-    .map((block) => block.text)
-    .join('\n\n')
-    .trim()
+  /** Text blocks that sit next to each other are one passage the API cut at
+   *  every citation — "Hạn mức là " + "2,4 tỷ" + " theo hồ sơ" — and are
+   *  joined back as written. A tool call between two of them is a real break
+   *  and becomes a paragraph. */
+  const parts: string[] = []
+  let run = ''
+  for (const block of message.content) {
+    if (block.type === 'text') {
+      run += (block as { text: string }).text
+    } else if (run) {
+      parts.push(run)
+      run = ''
+    }
+  }
+  if (run) parts.push(run)
+  return parts.join('\n\n').trim()
+}
+
+/** The documents an answer quoted, one line per file, pages merged.
+ *  Page citations only; a text file's character offsets mean nothing to a
+ *  reader, so it is named without a location. */
+export function citationsOf(message: ChatMessage): Array<{ title: string; pages: number[] }> {
+  const byTitle = new Map<string, Set<number>>()
+  for (const block of message.content) {
+    if (block.type !== 'text') continue
+    for (const citation of (block as { citations?: Citation[] | null }).citations ?? []) {
+      if (citation.type !== 'page_location' && citation.type !== 'char_location') continue
+      const title = citation.document_title || 'tài liệu đính kèm'
+      const pages = byTitle.get(title) ?? new Set<number>()
+      if (citation.type === 'page_location' && 'start_page_number' in citation) {
+        for (let p = citation.start_page_number; p < Math.max(citation.end_page_number, citation.start_page_number + 1); p++) {
+          pages.add(p)
+        }
+      }
+      byTitle.set(title, pages)
+    }
+  }
+  return [...byTitle].map(([title, pages]) => ({ title, pages: [...pages].sort((a, b) => a - b) }))
 }
 
 /* ────────────────────────────── Streaming ──────────────────────────────── */
 
 export type ChatEvent =
   | { kind: 'text'; delta: string }
+  | { kind: 'thinking'; delta: string }
   | { kind: 'tool'; name: string; risk: 'auto' | 'ask' }
   | { kind: 'done' }
   | { kind: 'error'; message: string }

@@ -21,10 +21,11 @@ import { UsersService } from '../users/users.service'
 import { propagateAttributes, startActiveObservation, startObservation } from '@langfuse/tracing'
 import { claude, MODEL, OUTPUT_CONFIG, THINKING, TITLE_MODEL } from './claude'
 import { LANGFUSE_ENABLED } from './tracing'
+import { usageFor } from './usage'
 import { systemPrompt, TITLE_PROMPT } from './prompt'
 import { metaOf, requestTools, runApproved, type ToolSink } from './tools'
 import { AttachmentsService, refOf, type UploadedFile } from './attachments.service'
-import { filesToLoad, replay, type ContextRef } from './replay'
+import { filesToLoad, replay, todayInVietnam, type ClockRef, type ContextRef } from './replay'
 import type { SendMessageDto, StartConversationDto } from './dto'
 
 type Block = Anthropic.Beta.Messages.BetaContentBlockParam
@@ -39,6 +40,9 @@ type Turn = Anthropic.Beta.Messages.BetaMessageParam
  *  those are the two things that answer "is it stuck". */
 export type ChatEvent =
   | { kind: 'text'; delta: string }
+  /** A piece of the summary of what the model is weighing before it answers.
+   *  Shown faded while nothing else is arriving, dropped once words do. */
+  | { kind: 'thinking'; delta: string }
   /** A tool the assistant reached for. `ask` ones never ran — they are
    *  waiting for the person, and the card will say so. */
   | { kind: 'tool'; name: string; risk: 'auto' | 'ask' }
@@ -57,6 +61,12 @@ const MAX_ITERATIONS = 12
 
 const MAX_TOKENS = 8192
 
+/** Cache diagnostics: the API compares each request's prompt with the one
+ *  named as the previous and says where they diverged — model, system, tools
+ *  or messages — and roughly how many tokens that cost. It only works if every
+ *  request carries the header, so it is on all of them. */
+const CACHE_DIAGNOSIS_BETA = 'cache-diagnosis-2026-04-07'
+
 /** How long a proposed write stays approvable.
  *
  *  An approval is a person saying "yes, now" about arguments they have just
@@ -68,6 +78,18 @@ const APPROVAL_TTL_MS = 30 * 60 * 1000
 
 @Injectable()
 export class ChatService {
+  /** The last response id per thread, for cache diagnostics to compare
+   *  against. In memory on purpose: it is a debugging aid, a restart only
+   *  costs one comparison per thread, and it is not worth a column.
+   *
+   *  Compared per turn, not per loop iteration. Pointing each iteration at
+   *  the one before would mean `runner.setMessagesParams` mid-loop — and the
+   *  runner reads that as the caller taking over the history: it stops
+   *  appending the model's reply and sends the same request again, up to
+   *  `max_iterations`. That shipped for one evening, lost every answer and
+   *  burned the credit balance re-sending a PDF twelve times. Do not. */
+  private readonly lastResponse = new Map<string, string>()
+
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly customers: CustomersService,
@@ -201,7 +223,13 @@ export class ChatService {
       ? await this.contextOf(user, body.contextKind, body.contextId!)
       : null
 
-    await this.turn(user, conversation, { role: 'user', content: text }, emit, files, context)
+    /** The date and the record on screen go ahead of the words. */
+    const preface: Array<ClockRef | ContextRef> = [
+      { type: 'clock', date: todayInVietnam() },
+      ...(context ? [context] : []),
+    ]
+
+    await this.turn(user, conversation, { role: 'user', content: text }, emit, files, preface)
 
     if (conversation.title === '') {
       await this.nameThread(user, conversation.id)
@@ -337,14 +365,14 @@ export class ChatService {
     said: Turn,
     emit?: Emit,
     files: Attachment[] = [],
-    context: ContextRef | null = null,
+    preface: Array<ClockRef | ContextRef> = [],
   ) {
     /** One trace per turn, with the person and the thread on it, so a run can
      *  be found later by who asked rather than by a request id nobody kept.
      *
      *  A no-op when Langfuse is not configured — `propagateAttributes` still
      *  runs the callback, and the spans inside simply go nowhere. */
-    if (!LANGFUSE_ENABLED) return this.runTurn(user, conversation, said, emit, files, context)
+    if (!LANGFUSE_ENABLED) return this.runTurn(user, conversation, said, emit, files, preface)
 
     return propagateAttributes(
       {
@@ -364,7 +392,7 @@ export class ChatService {
          *  itemisation — you can see what a turn cost and never why. */
         startActiveObservation('chat', async (span) => {
           span.update({ input: textOfTurn(said) })
-          const answer = await this.runTurn(user, conversation, said, emit, files, context)
+          const answer = await this.runTurn(user, conversation, said, emit, files, preface)
           span.update({ output: answer })
           return answer
         }),
@@ -377,17 +405,20 @@ export class ChatService {
     said: Turn,
     emit?: Emit,
     files: Attachment[] = [],
-    context: ContextRef | null = null,
+    preface: Array<ClockRef | ContextRef> = [],
   ) {
-    /** The turn as it is stored: the screen's context and the files by
-     *  reference, ahead of the words — the order the API reads documents best
-     *  in. The bytes and the context note are swapped in by `replay`, for this
-     *  request only. */
-    const stored: Turn = files.length || context
+    /** The turn as it is stored: the date, the screen's context and the files
+     *  by reference, ahead of the words — the order the API reads documents
+     *  best in. The bytes and the notes are swapped in by `replay`, for this
+     *  request only.
+     *
+     *  A decision turn has no preface and stays a plain string, which is how
+     *  `isDecisionTurn` recognises it. */
+    const stored: Turn = files.length || preface.length
       ? {
           role: 'user',
           content: [
-            ...(context ? [context] : []),
+            ...preface,
             ...files.map(refOf),
             /** A file sent without words has an empty text block, which the
              *  API refuses outright. */
@@ -422,6 +453,8 @@ export class ChatService {
 
     const runner = claude().beta.messages.toolRunner({
       model: MODEL,
+      betas: [CACHE_DIAGNOSIS_BETA],
+      diagnostics: { previous_message_id: this.lastResponse.get(conversation.id) ?? null },
       max_tokens: MAX_TOKENS,
       thinking: THINKING,
       output_config: OUTPUT_CONFIG,
@@ -442,6 +475,13 @@ export class ChatService {
       ],
       tools: requestTools(this.services(), user, sink),
       messages: sent,
+      /** The fourth breakpoint, and the one that moves: the API puts it on
+       *  the last block of every request, so each loop iteration and each
+       *  later turn reads the conversation so far from cache instead of paying
+       *  full price for it. Without it only the tools, the system prompt and
+       *  the newest file were cached, and a four-call question re-sent its
+       *  growing history four times at list price. */
+      cache_control: { type: 'ephemeral' },
       max_iterations: MAX_ITERATIONS,
       /** Streaming only when somebody is watching. The approval continuation
        *  and any future background use take the plain path, where a single
@@ -455,7 +495,10 @@ export class ChatService {
        *  iteration to close before the loop moves on to the tools. */
       for await (const stream of runner as AsyncIterable<BetaMessageStream>) {
         stream.on('text', (delta) => emit({ kind: 'text', delta }))
-        record(await stream.finalMessage(), [...runner.params.messages])
+        stream.on('thinking', (delta) => emit({ kind: 'thinking', delta }))
+        const message = await stream.finalMessage()
+        record(message, [...runner.params.messages])
+        this.lastResponse.set(conversation.id, message.id)
       }
     } else {
       /** Iterated rather than `runUntilDone()`, because each iteration is one
@@ -464,6 +507,7 @@ export class ChatService {
        *  other two go unmeasured. */
       for await (const message of runner as AsyncIterable<Anthropic.Beta.Messages.BetaMessage>) {
         record(message, [...runner.params.messages])
+        this.lastResponse.set(conversation.id, message.id)
       }
     }
 
@@ -616,6 +660,16 @@ export class ChatService {
         messages: [{ role: 'user', content: transcript }],
       })
 
+      /** Small, but billed like any other request — left out, it was one of
+       *  the gaps between what Langfuse showed and what the invoice said. */
+      if (LANGFUSE_ENABLED) {
+        startObservation(
+          'title',
+          { model: reply.model, input: transcript, usageDetails: usageFor(reply.usage) },
+          { asType: 'generation' },
+        ).end()
+      }
+
       const title = reply.content
         .filter((block) => block.type === 'text')
         .map((block) => block.text)
@@ -761,17 +815,21 @@ function record(message: Anthropic.Beta.Messages.BetaMessage, sent: Turn[]): voi
         content: message.content,
         stop_reason: message.stop_reason,
       },
+      /** Why the cache missed, when it did — `messages_changed` with a token
+       *  count is ordinary growth, `tools_changed` or `system_changed` is a
+       *  prefix somebody broke. Null when it hit, or when the comparison was
+       *  still running as the response went out. */
+      metadata: {
+        cacheMiss:
+          (message as { diagnostics?: { cache_miss_reason?: unknown } | null }).diagnostics
+            ?.cache_miss_reason ?? null,
+      },
       modelParameters: {
         thinking: THINKING.type,
         effort: OUTPUT_CONFIG.effort,
         max_tokens: MAX_TOKENS,
       },
-      usageDetails: {
-        input: usage.input_tokens,
-        output: usage.output_tokens,
-        cacheReadTokens: usage.cache_read_input_tokens ?? 0,
-        cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
-      },
+      usageDetails: usageFor(usage),
     },
     { asType: 'generation' },
   ).end()

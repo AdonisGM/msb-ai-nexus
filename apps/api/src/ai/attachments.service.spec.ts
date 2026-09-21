@@ -307,6 +307,7 @@ describe('what the model is sent', () => {
     expect(block).toEqual({
       type: 'document',
       title: 'hd.pdf',
+      citations: { enabled: true },
       source: { type: 'base64', media_type: 'application/pdf', data: PDF.toString('base64') },
     })
   })
@@ -321,6 +322,7 @@ describe('what the model is sent', () => {
     expect(block).toEqual({
       type: 'document',
       title: 'ghi-chu.txt',
+      citations: { enabled: true },
       source: { type: 'text', media_type: 'text/plain', data: TEXT.toString('utf8') },
     })
   })

@@ -2,7 +2,9 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
 import type { AttachmentRef } from './attachments.service'
 import {
+  clockNote,
   contextNote,
+  todayInVietnam,
   FILE_TURNS,
   filesToLoad,
   REPLAY_TURNS,
@@ -163,16 +165,41 @@ describe('replaying tool results', () => {
     expect((turns[2].content as Block[])[0]).toMatchObject({ content: 'rows 1' })
   })
 
-  it('hollows out tool results that have fallen behind', () => {
-    const rows = [...toolExchange('q1', 1), ...toolExchange('q2', 2), ...toolExchange('q3', 3)]
-    const turns = replay(rows, new Map())
+  const exchanges = (n: number) =>
+    Array.from({ length: n }, (_, i) => toolExchange(`q${i + 1}`, i + 1)).flat()
+  const resultOf = (turns: ReturnType<typeof replay>, n: number) =>
+    (turns[(n - 1) * 4 + 2].content as Block[])[0] as { content: unknown }
 
-    expect((turns[2].content as Block[])[0]).toMatchObject({
-      type: 'tool_result',
-      tool_use_id: 't1',
-      content: expect.stringContaining('lược bớt'),
-    })
-    expect((turns[6].content as Block[])[0]).toMatchObject({ content: 'rows 2' })
+  it('hollows nothing while the thread is short', () => {
+    const turns = replay(exchanges(5), new Map())
+    for (let n = 1; n <= 5; n++) expect(resultOf(turns, n).content).toBe(`rows ${n}`)
+  })
+
+  it('hollows the oldest block of exchanges once the thread has grown', () => {
+    const turns = replay(exchanges(6), new Map())
+    for (let n = 1; n <= 3; n++) {
+      expect(resultOf(turns, n).content).toEqual(expect.stringContaining('lược bớt'))
+    }
+    for (let n = 4; n <= 6; n++) expect(resultOf(turns, n).content).toBe(`rows ${n}`)
+  })
+
+  /** The point of cutting in steps: turns 7 and 8 replay the same prefix
+   *  turn 6 did, so it is read from cache rather than written again. */
+  it('keeps the same cut for the next turns, so the prefix holds still', () => {
+    const at6 = replay(exchanges(6), new Map())
+    const at8 = replay(exchanges(8), new Map())
+    expect(at8.slice(0, at6.length)).toEqual(at6)
+  })
+
+  it('moves the cut by a whole block when it moves', () => {
+    const turns = replay(exchanges(9), new Map())
+    expect(resultOf(turns, 6).content).toEqual(expect.stringContaining('lược bớt'))
+    expect(resultOf(turns, 7).content).toBe('rows 7')
+  })
+
+  it('keeps the tool_result block itself, only its contents go', () => {
+    const turns = replay(exchanges(6), new Map())
+    expect(resultOf(turns, 1)).toMatchObject({ type: 'tool_result', tool_use_id: 't1' })
   })
 
   it('leaves a string turn as a string', () => {
@@ -223,5 +250,70 @@ describe('replaying what was on screen', () => {
 
   it('does not count a context note as a file to load', () => {
     expect(filesToLoad([said(customer, { type: 'text', text: 'x' })])).toEqual([])
+  })
+})
+
+describe('replaying cited answers', () => {
+  /** A citation is an index into the documents of the request it came from.
+   *  By the next turn the document may be a placeholder, and a dangling index
+   *  is a request the API refuses. */
+  it('sends the words of a cited answer without the citations', () => {
+    const cited: StoredTurn = {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'Hạn mức là ' },
+        {
+          type: 'text',
+          text: '2,4 tỷ',
+          citations: [
+            {
+              type: 'page_location',
+              cited_text: 'Hạn mức đề xuất: 2.4 tỷ',
+              document_index: 0,
+              document_title: 'hd.pdf',
+              start_page_number: 1,
+              end_page_number: 2,
+            },
+          ],
+        },
+      ],
+    }
+
+    const content = replay([cited], new Map())[0].content as Block[]
+    expect(content).toEqual([
+      { type: 'text', text: 'Hạn mức là ' },
+      { type: 'text', text: '2,4 tỷ' },
+    ])
+  })
+})
+
+/** The date rides on each question so the model does not spend a round trip
+ *  on `today` first. */
+describe('the date on a question', () => {
+  it('reads the day, the weekday and the period starts', () => {
+    expect(clockNote('2026-09-22')).toBe(
+      '[Hôm nay: thứ Ba 22/09/2026 (2026-09-22). Tháng này từ 2026-09-01, quý này từ 2026-07-01, năm nay từ 2026-01-01.]',
+    )
+  })
+
+  it('starts the quarter on the right month', () => {
+    expect(clockNote('2026-01-05')).toContain('quý này từ 2026-01-01')
+    expect(clockNote('2026-06-30')).toContain('quý này từ 2026-04-01')
+    expect(clockNote('2026-12-31')).toContain('quý này từ 2026-10-01')
+  })
+
+  /** The container runs in UTC; seven hours behind, 00:30 in Hà Nội is
+   *  still yesterday there. */
+  it('takes the date in Vietnam, not the server’s timezone', () => {
+    expect(todayInVietnam(new Date('2026-09-21T17:30:00Z'))).toBe('2026-09-22')
+    expect(todayInVietnam(new Date('2026-09-21T16:30:00Z'))).toBe('2026-09-21')
+  })
+
+  it('replays the stored date as the same line every time', () => {
+    const row = said({ type: 'clock', date: '2026-09-22' }, { type: 'text', text: 'tháng này?' })
+    const first = replay([row], new Map())
+    const again = replay([row, answered('...'), said({ type: 'text', text: 'x' })], new Map())
+    expect(again[0]).toEqual(first[0])
+    expect((first[0].content as Block[])[0]).toEqual({ type: 'text', text: clockNote('2026-09-22') })
   })
 })

@@ -28,8 +28,14 @@ export const SEARCH_MODEL = TITLE_MODEL
 
 /** Adaptive, not a token budget: `budget_tokens` is rejected outright by the
  *  5 series, and the model is better placed than we are to judge how much a
- *  given question deserves. */
-export const THINKING = { type: 'adaptive' } as const
+ *  given question deserves.
+ *
+ *  `summarized`, because the 5 series defaults to `omitted` — thinking blocks
+ *  with empty text — and a ten-second think then looked like three dots doing
+ *  nothing. The summary is streamed to the panel as one faded line of what it
+ *  is weighing. Billing is the same either way; `display` only decides what
+ *  comes back. */
+export const THINKING = { type: 'adaptive', display: 'summarized' } as const
 
 /** How hard to work on a turn.
  *

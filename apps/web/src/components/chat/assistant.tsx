@@ -17,6 +17,7 @@ import {
   threadQuery,
   uploadAttachment,
   type Attachment,
+  citationsOf,
   contextOf,
   type ChatMessage,
   type ChatToolCall,
@@ -153,7 +154,7 @@ export function Assistant({
    *  flight has no id, no tool results and nothing anybody can approve — it is
    *  a preview, and merging it with records that are real is how a half-written
    *  sentence ends up looking like something that happened. */
-  const [live, setLive] = useState<{ text: string; tools: string[] } | null>(null)
+  const [live, setLive] = useState<Live | null>(null)
   const [failed, setFailed] = useState('')
 
   /** What the person just said, shown back to them before the server has
@@ -172,14 +173,21 @@ export function Assistant({
    *  show it; gathering them and drawing once per animation frame looks the
    *  same and does a fraction of the work. */
   const unsent = useRef('')
+  const unsentThought = useRef('')
   const frame = useRef<number | null>(null)
 
   const drawText = () => {
     frame.current = null
     const text = unsent.current
-    if (!text) return
+    const thought = unsentThought.current
+    if (!text && !thought) return
     unsent.current = ''
-    setLive((was) => ({ tools: was?.tools ?? [], text: (was?.text ?? '') + text }))
+    unsentThought.current = ''
+    setLive((was) => ({
+      tools: was?.tools ?? [],
+      text: (was?.text ?? '') + text,
+      thinking: (was?.thinking ?? '') + thought,
+    }))
   }
 
   /** Resolves to whether the turn went through, so a failed send can hand its
@@ -197,8 +205,9 @@ export function Assistant({
   ) => {
     setFailed('')
     setEcho(said ?? null)
-    setLive({ text: '', tools: [] })
+    setLive({ text: '', tools: [], thinking: '' })
     unsent.current = ''
+    unsentThought.current = ''
     let ok = true
 
     /** Set after a tool runs, so the next words start a new paragraph rather
@@ -211,10 +220,15 @@ export function Assistant({
           unsent.current += (broke ? '\n\n' : '') + event.delta
           broke = false
           frame.current ??= requestAnimationFrame(drawText)
+        } else if (event.kind === 'thinking') {
+          unsentThought.current += event.delta
+          frame.current ??= requestAnimationFrame(drawText)
         } else if (event.kind === 'tool') {
           broke = true
           setLive((was) => ({
             text: was?.text ?? '',
+            /** A new step starts a new thought; the old one is finished. */
+            thinking: '',
             /** Named once however many times it is called: three searches in a
              *  row is one thing happening, not three. */
             tools: was?.tools.includes(event.name) ? was.tools : [...(was?.tools ?? []), event.name],
@@ -676,7 +690,7 @@ function Thread({
   messages: ChatMessage[]
   calls: ChatToolCall[]
   echo: { text: string; files: Pending[] } | null
-  live: { text: string; tools: string[] } | null
+  live: Live | null
   failed: string
   onDecide: (callId: string, approve: boolean) => void
   onPick: (text: string) => void
@@ -702,7 +716,7 @@ function Thread({
   useLayoutEffect(() => {
     const el = scroller.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
-  }, [rows, echo, live?.text, live?.tools.length, failed])
+  }, [rows, echo, live?.text, live?.thinking, live?.tools.length, failed])
 
   return (
     <div
@@ -735,6 +749,7 @@ function Thread({
             text={row.text}
             files={row.files}
             context={row.context}
+            citations={row.citations}
             actions={row.actions}
             onDecide={onDecide}
             onPick={onPick}
@@ -785,6 +800,7 @@ type Row =
       text: string
       files: Attachment[]
       context: ContextBlock | null
+      citations: Array<{ title: string; pages: number[] }>
       /** Cards the person acts on — a proposed write, a question back. These
        *  stay where they were asked. */
       actions: ChatToolCall[]
@@ -829,7 +845,15 @@ function layout(messages: ChatMessage[], calls: ChatToolCall[]): Row[] {
     reads.push(...own.filter((call) => !isActionCall(call)))
 
     if (text !== '' || files.length > 0 || actions.length > 0) {
-      rows.push({ kind: 'turn', message, text, files, context: contextOf(message), actions })
+      rows.push({
+        kind: 'turn',
+        message,
+        text,
+        files,
+        context: contextOf(message),
+        citations: citationsOf(message),
+        actions,
+      })
     }
   }
   flush('src-end')
@@ -917,8 +941,15 @@ const QUIET_TOOLS = new Set([
  *  waiting is concerned: nothing yet, reading something, writing the answer.
  *  What makes the wait bearable is not a spinner but knowing which of the
  *  three it is in. */
-function Live({ live }: { live: { text: string; tools: string[] } }) {
+type Live = { text: string; tools: string[]; thinking: string }
+
+function Live({ live }: { live: Live }) {
   const reading = live.tools.filter((name) => !QUIET_TOOLS.has(name))
+
+  /** The tail of the summary, one line. The whole of it would be a second
+   *  answer to read; the last clause is enough to show it is working and on
+   *  what. */
+  const thought = live.thinking.replace(/\s+/g, ' ').trim().slice(-140)
 
   return (
     <div className="flex flex-col items-start gap-[7px]">
@@ -947,10 +978,18 @@ function Live({ live }: { live: { text: string; tools: string[] } }) {
           </div>
         </div>
       ) : (
-        <div className="flex items-center gap-2 rounded-[12px_12px_12px_4px] border border-line bg-raised px-3 py-2.5">
-          <span className="tia-dot" />
-          <span className="tia-dot" style={{ animationDelay: '.16s' }} />
-          <span className="tia-dot" style={{ animationDelay: '.32s' }} />
+        <div className="flex max-w-[88%] items-center gap-2 rounded-[12px_12px_12px_4px] border border-line bg-raised px-3 py-2.5">
+          <span className="tia-dot flex-none" />
+          <span className="tia-dot flex-none" style={{ animationDelay: '.16s' }} />
+          <span className="tia-dot flex-none" style={{ animationDelay: '.32s' }} />
+          {thought ? (
+            <span className="ml-1 min-w-0 truncate text-[11.5px] text-muted italic" dir="rtl">
+              {/** Right-to-left only for where it truncates: the newest words
+                *  stay visible and the ellipsis eats the start. The bdi keeps
+                *  the Vietnamese itself reading left to right. */}
+              <bdi>{thought}</bdi>
+            </span>
+          ) : null}
         </div>
       )}
     </div>
@@ -995,6 +1034,7 @@ const Turn = memo(function Turn({
   text,
   files,
   context,
+  citations,
   actions,
   onDecide,
   onPick,
@@ -1005,6 +1045,7 @@ const Turn = memo(function Turn({
   text: string
   files: Attachment[]
   context: ContextBlock | null
+  citations: Array<{ title: string; pages: number[] }>
   actions: ChatToolCall[]
   onDecide: (callId: string, approve: boolean) => void
   onPick: (text: string) => void
@@ -1039,6 +1080,19 @@ const Turn = memo(function Turn({
         >
           <Markdown text={text} inverted={mine} />
         </div>
+      ) : null}
+
+      {/** Which page of which file the answer rests on, so a figure read out
+        *  of a contract can be checked against the contract. */}
+      {citations.length > 0 ? (
+        <span className="max-w-[88%] text-[10.5px] text-muted">
+          Trích từ{' '}
+          {citations
+            .map(({ title, pages }) =>
+              pages.length > 0 ? `${title} · tr. ${pages.join(', ')}` : title,
+            )
+            .join('; ')}
+        </span>
       ) : null}
 
       {actions.map((call) => (
