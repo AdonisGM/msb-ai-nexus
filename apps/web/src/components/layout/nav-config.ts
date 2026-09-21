@@ -1,4 +1,11 @@
-import { Gauge, LayoutDashboard, Users, UserCog, type LucideIcon } from 'lucide-react'
+import {
+  BotMessageSquare,
+  Gauge,
+  LayoutDashboard,
+  Users,
+  UserCog,
+  type LucideIcon,
+} from 'lucide-react'
 import type { Me } from '~/api/auth'
 import type { DictKey } from '~/i18n'
 
@@ -43,6 +50,15 @@ export const NAV: NavItem[] = [
     key: 'nav.opportunities',
     to: '/opportunities',
     icon: Gauge,
+    roles: ['sale', 'team_lead', 'bm', 'admin'],
+  },
+  {
+    /** Tia's own screen: every conversation, and one wide enough to read a
+     *  table in. The floating panel stays for a quick question from any
+     *  screen; this is for the longer ones. */
+    key: 'nav.tia',
+    to: '/tia',
+    icon: BotMessageSquare,
     roles: ['sale', 'team_lead', 'bm', 'admin'],
   },
   {

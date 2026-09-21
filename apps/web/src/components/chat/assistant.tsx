@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, FileText, Paperclip, Trash2, X } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { ChevronRight, FileText, Paperclip, Settings2, Trash2, X } from 'lucide-react'
 import {
   ATTACH_ACCEPT,
   ATTACH_MAX_PER_MESSAGE,
@@ -89,9 +90,15 @@ export function Assistant({
   onClose,
   subject,
   prefill,
+  variant = 'popup',
 }: {
   open: boolean
   onClose: () => void
+  /** `popup` floats over whatever screen is open. `page` is Tia's own screen:
+   *  the thread list always visible on the left, the conversation filling the
+   *  rest. One component for both, so the streaming, the files, the context
+   *  and the approvals behave the same wherever they are used. */
+  variant?: 'popup' | 'page'
   /** A question the person arrived with — from a bubble they clicked. Put in
    *  the box rather than sent, so they can change it first. */
   prefill?: string
@@ -366,15 +373,16 @@ export function Assistant({
     onError: (error: unknown) => void onWriteError(error),
   })
 
-  /** Esc closes, wherever the focus is. */
+  /** Esc closes, wherever the focus is — the popup only. On its own page Tia
+   *  has nothing to close into. */
   useEffect(() => {
-    if (!open) return
+    if (!open || variant === 'page') return
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  }, [open, onClose, variant])
 
   if (!open) return null
 
@@ -437,6 +445,94 @@ export function Assistant({
     })()
   }
 
+  const pickThread = (id: string) => {
+    if (id !== threadId) clearPending()
+    setThreadId(id)
+    setShowSessions(false)
+  }
+  const newThread = () => {
+    clearPending()
+    start.mutate()
+  }
+
+  const conversation = (
+    <>
+      <ContextBar
+        subject={subject}
+        keeping={keepContext}
+        onDrop={() => setKeepContext(false)}
+        onRestore={() => setKeepContext(true)}
+      />
+
+      <Thread
+        threadId={threadId}
+        messages={messages}
+        calls={calls}
+        echo={showEcho ? echo : null}
+        live={live}
+        failed={failed}
+        onDecide={decide}
+        onPick={pick}
+        deciding={sending}
+        wide={variant === 'page'}
+      />
+
+      <Composer
+        value={draft}
+        onChange={setDraft}
+        onSubmit={submit}
+        busy={busy}
+        showQuick={messages.length === 0}
+        quick={keepContext && subject ? QUICK_FOR[subject.kind] : QUICK}
+        canAttach={canAttach}
+        pending={pending}
+        onAttach={attach}
+        onDrop={dropPending}
+        canSend={(draft.trim() !== '' || ready.length > 0) && !uploading}
+        wide={variant === 'page'}
+      />
+    </>
+  )
+
+  if (variant === 'page') {
+    return (
+      <div className="flex h-[calc(100dvh-9rem)] min-h-[520px] overflow-hidden rounded-xl border border-line bg-surface">
+        {/** The threads stay in view on a wide screen — on Tia's own page
+          *  switching between conversations is the navigation, not a detour. */}
+        <aside className="hidden w-[272px] flex-none flex-col border-r border-line bg-raised md:flex">
+          <Sessions
+            rows={list.data ?? []}
+            current={threadId}
+            onPick={pickThread}
+            onNew={newThread}
+            onRemove={(id) => remove.mutate(id)}
+          />
+        </aside>
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <PageHeader
+            title={thread.data?.conversation.title || 'Cuộc trò chuyện mới'}
+            onSessions={() => setShowSessions((was) => !was)}
+            sessionsOpen={showSessions}
+          />
+          {showSessions ? (
+            <div className="flex min-h-0 flex-1 flex-col md:hidden">
+              <Sessions
+                rows={list.data ?? []}
+                current={threadId}
+                onPick={pickThread}
+                onNew={newThread}
+                onRemove={(id) => remove.mutate(id)}
+              />
+            </div>
+          ) : (
+            conversation
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div
       role="dialog"
@@ -458,52 +554,12 @@ export function Assistant({
           <Sessions
             rows={list.data ?? []}
             current={threadId}
-            onPick={(id) => {
-              if (id !== threadId) clearPending()
-              setThreadId(id)
-              setShowSessions(false)
-            }}
-            onNew={() => {
-              clearPending()
-              start.mutate()
-            }}
+            onPick={pickThread}
+            onNew={newThread}
             onRemove={(id) => remove.mutate(id)}
           />
         ) : (
-          <>
-            <ContextBar
-              subject={subject}
-              keeping={keepContext}
-              onDrop={() => setKeepContext(false)}
-              onRestore={() => setKeepContext(true)}
-            />
-
-            <Thread
-              threadId={threadId}
-              messages={messages}
-              calls={calls}
-              echo={showEcho ? echo : null}
-              live={live}
-              failed={failed}
-              onDecide={decide}
-              onPick={pick}
-              deciding={sending}
-            />
-
-            <Composer
-              value={draft}
-              onChange={setDraft}
-              onSubmit={submit}
-              busy={busy}
-              showQuick={messages.length === 0}
-              quick={keepContext && subject ? QUICK_FOR[subject.kind] : QUICK}
-              canAttach={canAttach}
-              pending={pending}
-              onAttach={attach}
-              onDrop={dropPending}
-              canSend={(draft.trim() !== '' || ready.length > 0) && !uploading}
-            />
-          </>
+          conversation
         )}
       </div>
     </div>
@@ -555,6 +611,47 @@ function Header({
       >
         <X size={13} />
       </button>
+    </div>
+  )
+}
+
+/** The header on Tia's own page: the thread's title, and the way into the
+ *  settings — the documents Tia consults and what it remembers. No close
+ *  button; the menu is how you leave a page. */
+function PageHeader({
+  title,
+  onSessions,
+  sessionsOpen,
+}: {
+  title: string
+  onSessions: () => void
+  sessionsOpen: boolean
+}) {
+  return (
+    <div className="flex flex-none items-center gap-2.5 border-b border-line px-4 py-3">
+      <Spark size={28} />
+      <span className="mr-auto flex min-w-0 flex-col gap-px">
+        <span className="truncate text-[14px] font-semibold tracking-[-.01em]">{title}</span>
+        <span className="truncate text-[11px] text-muted">Trợ lý bán hàng Tia</span>
+      </span>
+
+      <button
+        type="button"
+        onClick={onSessions}
+        className={cx(
+          'h-[28px] flex-none cursor-pointer rounded-[8px] border border-line2 px-2.5 text-[12px] font-medium transition-colors hover:border-[var(--accent)] md:hidden',
+          sessionsOpen ? 'bg-sunken text-ink' : 'bg-transparent text-ink2',
+        )}
+      >
+        Phiên
+      </button>
+      <Link
+        to="/tia/settings"
+        className="flex h-[28px] flex-none items-center gap-1.5 rounded-[8px] border border-line2 px-2.5 text-[12px] font-medium text-ink2 transition-colors hover:bg-sunken"
+      >
+        <Settings2 size={13} />
+        <span className="hidden sm:inline">Tài liệu & ghi nhớ</span>
+      </Link>
     </div>
   )
 }
@@ -685,6 +782,7 @@ function Thread({
   onDecide,
   onPick,
   deciding,
+  wide = false,
 }: {
   threadId: string | null
   messages: ChatMessage[]
@@ -695,6 +793,9 @@ function Thread({
   onDecide: (callId: string, approve: boolean) => void
   onPick: (text: string) => void
   deciding: boolean
+  /** On the full page: the column is held to a reading width in the middle,
+   *  because a sentence stretched across a 27-inch screen is not read. */
+  wide?: boolean
 }) {
   const scroller = useRef<HTMLDivElement>(null)
 
@@ -725,8 +826,9 @@ function Thread({
         const el = event.currentTarget
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
       }}
-      className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto px-3 py-3.5"
+      className="flex min-h-0 flex-1 flex-col overflow-auto px-3 py-3.5"
     >
+      <div className={cx('flex w-full flex-1 flex-col gap-3', wide && 'mx-auto max-w-[820px] px-2 py-2')}>
       {rows.length === 0 && !live && !echo ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
           <Spark size={34} />
@@ -789,6 +891,7 @@ function Thread({
           {tError(failed)}
         </div>
       ) : null}
+      </div>
     </div>
   )
 }
@@ -1121,6 +1224,7 @@ function Composer({
   onAttach,
   onDrop,
   canSend,
+  wide = false,
 }: {
   value: string
   onChange: (next: string) => void
@@ -1133,11 +1237,13 @@ function Composer({
   onAttach: (files: File[]) => void
   onDrop: (key: string) => void
   canSend: boolean
+  wide?: boolean
 }) {
   const picker = useRef<HTMLInputElement>(null)
 
   return (
-    <div className="flex flex-none flex-col gap-2 border-t border-line bg-surface px-3 pt-[9px] pb-[11px]">
+    <div className="flex-none border-t border-line bg-surface px-3 pt-[9px] pb-[11px]">
+    <div className={cx('flex flex-col gap-2', wide && 'mx-auto max-w-[820px] px-2')}>
       {showQuick ? (
         <div className="flex flex-wrap gap-[7px]">
           {quick.map((prompt) => (
@@ -1240,6 +1346,7 @@ function Composer({
       <span className="text-[10.5px] leading-relaxed text-pretty text-muted">
         Tia đọc dữ liệu bạn được xem. Mọi thay đổi đều cần bạn xác nhận.
       </span>
+    </div>
     </div>
   )
 }

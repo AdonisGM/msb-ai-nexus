@@ -17,6 +17,7 @@ export const vi = {
   'nav.customers': 'Khách hàng',
   'nav.dashboard': 'Số liệu',
   'nav.users': 'Người dùng',
+  'nav.tia': 'Trợ lý Tia',
   'nav.opportunities': 'Cơ hội',
   'nav.team': 'Nhóm của tôi',
   'nav.unit': 'Đơn vị',

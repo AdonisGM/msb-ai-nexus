@@ -308,6 +308,11 @@ function AskTia() {
   const [prefill, setPrefill] = useState('')
   const status = useQuery(chatStatusQuery())
   const subject = useCurrentSubject()
+  /** On Tia's own page the conversation is already the whole screen; a
+   *  second, floating one on top of it would be two Tias talking at once. */
+  const onTiaPage = useRouterState({
+    select: (state) => state.location.pathname.startsWith('/tia'),
+  })
 
   /** Cmd/Ctrl + K, because that is where people reach for it. */
   useEffect(() => {
@@ -321,7 +326,7 @@ function AskTia() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  if (!status.data?.enabled) return null
+  if (!status.data?.enabled || onTiaPage) return null
 
   const ask = (text?: string) => {
     setPrefill(text ?? '')
