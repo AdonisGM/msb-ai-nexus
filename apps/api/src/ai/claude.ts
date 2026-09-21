@@ -21,6 +21,11 @@ export const MODEL = 'claude-sonnet-5'
  *  ever read a title and wished it were cleverer. */
 export const TITLE_MODEL = 'claude-haiku-4-5-20251001'
 
+/** Web searches, once a person has approved one. The work is reading a few
+ *  pages and saying what they say — Haiku does that well, and the main model's
+ *  judgement is spent afterwards, on what the result means for the customer. */
+export const SEARCH_MODEL = TITLE_MODEL
+
 /** Adaptive, not a token budget: `budget_tokens` is rejected outright by the
  *  5 series, and the model is better placed than we are to judge how much a
  *  given question deserves. */

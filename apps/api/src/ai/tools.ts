@@ -15,6 +15,7 @@ import {
   STAGES,
   type User,
 } from '../db/schema'
+import { hasPersonalNumber, searchWeb } from './web-search'
 
 /** What the assistant may reach for.
  *
@@ -118,6 +119,11 @@ export const TOOL_META: Record<string, ToolMeta> = {
   draft_opportunity: { deferred: true, risk: 'ask', renderer: 'card.opportunity' },
   set_next_action: { deferred: true, risk: 'ask', renderer: 'card.opportunity' },
   update_lead_fields: { deferred: true, risk: 'ask', renderer: 'card.opportunity' },
+
+  /** Not a write, but it asks all the same: the query is the one thing the
+   *  assistant can send outside the system, and a person decides whether it
+   *  goes. Open to every role, the branch manager included. */
+  search_web: { deferred: true, risk: 'ask', renderer: null },
 }
 
 /** Whether this person may change a record at all.
@@ -341,14 +347,20 @@ export function buildTools(services: Services, user: User, sink: ToolSink = () =
     name: string
     description: string
     inputSchema: S
+    /** What calling it does, said to the model. Defaults to the wording for
+     *  a write; the search says the same thing about sending a query out. */
+    permission?: string
   }) {
     return betaZodTool({
       name: spec.name,
       description: `${spec.description}
 
-GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — hệ thống sẽ hiện một thẻ duyệt kèm đúng tham số bạn điền, và người dùng bấm Duyệt hoặc Từ chối.
+${
+  spec.permission ??
+  `GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — hệ thống sẽ hiện một thẻ duyệt kèm đúng tham số bạn điền, và người dùng bấm Duyệt hoặc Từ chối.
 
-Đừng mô tả bằng lời rồi chờ người dùng gõ "đồng ý". Làm vậy là không có gì được ghi lại và không có thẻ nào hiện ra. Cứ gọi tool với tham số tốt nhất bạn có.`,
+Đừng mô tả bằng lời rồi chờ người dùng gõ "đồng ý". Làm vậy là không có gì được ghi lại và không có thẻ nào hiện ra. Cứ gọi tool với tham số tốt nhất bạn có.`
+}`,
       inputSchema: spec.inputSchema,
       run: async (input: z.infer<S>) => {
         sink({ name: spec.name, input, result: null, ms: 0, failed: false })
@@ -726,6 +738,41 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
         reports.byTeam(user, { ...input, ownerId: await ownerIdOf(input.ownerId) }),
     }),
 
+    /* ── Tra ngoài hệ thống, phải xin phép ─────────────────────────────── */
+    ask({
+      name: 'search_web',
+      description:
+        'Tìm thông tin CÔNG KHAI trên mạng: tin tức về một doanh nghiệp (mở rộng, trúng thầu, ' +
+        'kiện tụng, thay đổi lãnh đạo), thông tin đăng ký doanh nghiệp, ngành nghề, quy định ' +
+        'và thông tư mới. Dùng khi câu hỏi cần thứ hệ thống không có.\n\n' +
+        'Từ khoá sẽ được gửi ra dịch vụ tìm kiếm bên ngoài, nên:\n' +
+        '- Chỉ dùng tên doanh nghiệp, ngành, chủ đề. KHÔNG BAO GIỜ đưa thông tin cá nhân của ' +
+        'khách: số điện thoại, CCCD, số tài khoản, địa chỉ nhà, hay tên khách cá nhân kèm ' +
+        'thông tin nhận dạng.\n' +
+        '- Kết quả là nguồn bên ngoài, chưa kiểm chứng. Không bao giờ dùng lãi suất, phí hay ' +
+        'điều kiện tìm được thay cho sản phẩm của ngân hàng mình.',
+      inputSchema: z.object({
+        query: z
+          .string()
+          .min(2)
+          .max(200)
+          .refine((query) => !hasPersonalNumber(query), {
+            message:
+              'Từ khoá có dãy số giống số điện thoại, CCCD hoặc số tài khoản. Bỏ nó đi rồi gọi lại.',
+          })
+          .describe('Từ khoá tìm kiếm, đúng như sẽ gửi đi'),
+        reason: z
+          .string()
+          .min(2)
+          .max(200)
+          .describe('Vì sao cần tìm, một câu — hiện trên thẻ để người dùng quyết định'),
+      }),
+      permission:
+        'GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP TÌM. Chưa có gì được gửi đi — hệ thống hiện một ' +
+        'thẻ kèm đúng từ khoá và lý do, người dùng bấm Tìm thì mới tìm. Đừng hỏi bằng lời ' +
+        '"bạn có muốn tôi tìm trên mạng không" — gọi tool luôn, thẻ chính là câu hỏi đó.',
+    }),
+
     /* ── Bốn việc phải xin phép ───────────────────────────────────────── */
     ...(writable ? writeTools() : []),
   ]
@@ -803,7 +850,8 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
   }
 }
 
-/** Runs a write tool for real, once a person has approved it.
+/** Runs an `ask` tool for real, once a person has approved it — one of the
+ *  four writes, or a web search.
  *
  *  Deliberately a separate function from the tools above, and deliberately
  *  taking `user` again: this is the moment the write actually happens, so it
@@ -817,6 +865,14 @@ export async function runApproved(
 ): Promise<unknown> {
   const { customers: _customers, opportunities, signals } = services
   void _customers
+
+  /** Before the role gate: a search changes nothing in the branch's data, so
+   *  the rule that keeps a branch manager read-only does not apply to it. */
+  if (name === 'search_web') {
+    const query = String(input.query ?? '')
+    if (hasPersonalNumber(query)) throw new Error('search_query_has_personal_number')
+    return searchWeb(query)
+  }
 
   /** Checked again here, and not only in the tool list. The approval comes
    *  back in a later request, and the only thing linking it to the proposal is

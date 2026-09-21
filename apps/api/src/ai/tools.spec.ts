@@ -1,4 +1,16 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+/** The search itself is a live request to Anthropic. What is tested here is
+ *  who may run it and when — so it is replaced with a stub that records what it
+ *  was asked for. */
+const searched: string[] = []
+vi.mock('./web-search', async (original) => ({
+  ...(await original<typeof import('./web-search')>()),
+  searchWeb: async (query: string) => {
+    searched.push(query)
+    return { query, summary: 'Tóm tắt', sources: [], searches: 1 }
+  },
+}))
 import { SessionService } from '../auth/session.service'
 import { CustomersService } from '../customers/customers.service'
 import { OpportunitiesService } from '../opportunities/opportunities.service'
@@ -37,7 +49,10 @@ const services = {
   targets: new TargetsService(testDb),
 }
 
-beforeEach(resetDb)
+beforeEach(async () => {
+  await resetDb()
+  searched.length = 0
+})
 afterAll(closeDb)
 
 /** The tools come back as SDK objects; this finds one and runs it the way the
@@ -272,7 +287,7 @@ describe('the tool register', () => {
 
   /** Named exactly rather than counted, so a future tool that writes cannot be
    *  added as `auto` without this failing and somebody reading it. */
-  it('asks about every write and about nothing else', () => {
+  it('asks about every write, and before anything leaves the system', () => {
     const asks = Object.entries(TOOL_META)
       .filter(([, meta]) => meta.risk === 'ask')
       .map(([name]) => name)
@@ -281,6 +296,7 @@ describe('the tool register', () => {
     expect(asks).toEqual([
       'draft_opportunity',
       'record_signal',
+      'search_web',
       'set_next_action',
       'update_lead_fields',
     ])
@@ -288,6 +304,7 @@ describe('the tool register', () => {
 
   it('runs every read without asking', () => {
     for (const [name, meta] of Object.entries(TOOL_META)) {
+      if (name === 'search_web') continue
       if (name.startsWith('get_') || name.startsWith('search_') || name.startsWith('list_')) {
         expect(meta.risk, name).toBe('auto')
       }
@@ -489,5 +506,73 @@ describe('what a branch manager may do through the assistant', () => {
     const names = buildTools(services, admin).map((tool) => tool.name)
 
     for (const write of WRITES) expect(names, write).toContain(write)
+  })
+})
+
+/** Searching outside the system is proposed like a write and runs only once a
+ *  person has seen the exact query. It changes nothing in the branch's data, so
+ *  the read-only rule for a branch manager does not reach it. */
+describe('searching the web', () => {
+  it('searches nothing when the assistant proposes a search', async () => {
+    const b = await branch()
+    const seen: string[] = []
+    const call = toolset(b.saleSse, (c) => seen.push(c.name))
+
+    const answer = await call('search_web', {
+      query: 'Công ty Bên Kia mở rộng nhà máy',
+      reason: 'Khách vừa nhắc tới dự án mới',
+    })
+
+    expect(answer.status).toBe('pending_approval')
+    expect(seen).toEqual(['search_web'])
+    expect(searched).toEqual([])
+  })
+
+  it('searches the approved query, and only that', async () => {
+    const b = await branch()
+
+    const result = await runApproved(services, b.saleSse, 'search_web', {
+      query: 'Công ty Bên Kia trúng thầu',
+      reason: 'x',
+    })
+
+    expect(searched).toEqual(['Công ty Bên Kia trúng thầu'])
+    expect(result).toMatchObject({ summary: 'Tóm tắt' })
+  })
+
+  it('is offered to every role, the branch manager included', async () => {
+    const b = await branch()
+    const admin = { ...b.bm, role: 'admin' as const }
+
+    for (const user of [b.saleRb, b.leadRb, b.bm, admin]) {
+      const names = buildTools(services, user).map((tool) => tool.name)
+      expect(names, user.role).toContain('search_web')
+    }
+  })
+
+  it('runs for a branch manager, who may not write', async () => {
+    const b = await branch()
+    await runApproved(services, b.bm, 'search_web', { query: 'quy định mới NHNN', reason: 'x' })
+    expect(searched).toEqual(['quy định mới NHNN'])
+  })
+
+  /** The card is the real guard; this catches the approval pressed without
+   *  reading, and a row stored before the schema refused it. */
+  it('refuses to send a phone or ID number, even when approved', async () => {
+    const b = await branch()
+
+    await expect(
+      runApproved(services, b.saleRb, 'search_web', { query: 'khách 0912 345 678', reason: 'x' }),
+    ).rejects.toThrow('search_query_has_personal_number')
+    expect(searched).toEqual([])
+  })
+
+  it('tells the model to rephrase a query with a personal number', async () => {
+    const b = await branch()
+    const tool = buildTools(services, b.saleRb).find((candidate) => candidate.name === 'search_web')
+    const schema = (tool as unknown as { parse: (input: unknown) => unknown }).parse
+
+    expect(() => schema({ query: 'CCCD 001203004567', reason: 'cần tra' })).toThrow()
+    expect(() => schema({ query: 'Công ty Đại Dương 2026', reason: 'cần tra' })).not.toThrow()
   })
 })
