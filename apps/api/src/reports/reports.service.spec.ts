@@ -346,3 +346,233 @@ describe('the monthly trend', () => {
     expect(july?.doneBps).toBe(0)
   })
 })
+
+/* ─────────────────────────────── Dự báo ──────────────────────────────────── */
+
+/** A day, as the report's range parameters spell it. */
+function dayOffset(days: number): string {
+  const now = new Date()
+  const day = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() + days))
+  return day.toISOString().slice(0, 10)
+}
+
+const PERIOD = { from: dayOffset(-9), to: dayOffset(10) }
+
+/** A quarter nine days old with twenty days in it, and a branch whose own
+ *  history says three different things depending on how far a lead got.
+ *
+ *  Fifteen closed deals, laid out so the three conditional rates come out
+ *  distinct and checkable by hand:
+ *
+ *  | reached    | closed | won | rate                |
+ *  |------------|--------|-----|---------------------|
+ *  | nothing    |      5 |   0 | 4/15 = 2667 bps *   |
+ *  | contacted  |      5 |   1 | 4/10 = 4000 bps     |
+ *  | advised    |      5 |   3 | 3/5  = 6000 bps     |
+ *
+ *  \* a lead nobody has contacted is measured against every closed deal,
+ *  because that is where it is standing: the very beginning.
+ *
+ *  Every one of them was raised twenty days ago and closed five days ago, so
+ *  the branch's median winning deal takes fifteen days. Eleven days are left
+ *  in the period, which puts the due line at four days of age.
+ *
+ *  Fifteen still open, five at each stage: three raised eight days ago, which
+ *  clears that line, and two raised yesterday, which does not. */
+async function period() {
+  const branch = await makeBranch()
+  const customer = await makeCustomer({ ownerId: branch.saleRb.id, segment: 'rb' })
+  const at = (offset: number) => new Date(`${dayOffset(offset)}T00:00:00Z`)
+
+  const add = (shape: Record<string, unknown>) =>
+    makeOpportunity({ customerId: customer.id, ownerId: branch.saleRb.id, ...shape })
+
+  const closed = [
+    ...Array(5).fill({ stage: 'new', outcome: 'lost' }),
+    { stage: 'contacted', outcome: 'won' },
+    ...Array(4).fill({ stage: 'contacted', outcome: 'lost' }),
+    ...Array(3).fill({ stage: 'advised', outcome: 'won' }),
+    ...Array(2).fill({ stage: 'advised', outcome: 'lost' }),
+  ]
+  for (const shape of closed) {
+    await add({ ...shape, createdAt: at(-20), closedAt: at(-5) })
+  }
+
+  for (const stage of ['new', 'contacted', 'advised']) {
+    for (let i = 0; i < 3; i++) await add({ stage, createdAt: at(-8) })
+    for (let i = 0; i < 2; i++) await add({ stage, createdAt: at(-1) })
+  }
+
+  await makeTarget({ unitId: branch.unit.id, metric: 'cr_rate', amount: 3000 })
+  return { ...branch, customerId: customer.id }
+}
+
+describe('the end-of-period forecast', () => {
+  /** A forecast of "all time" is not a forecast. */
+  it('refuses to guess without a period', async () => {
+    const s = await period()
+    await expect(service.forecast(s.bm, { from: PERIOD.from })).rejects.toThrow()
+    await expect(service.forecast(s.bm, {})).rejects.toThrow()
+  })
+
+  it('measures its rates off the branch’s own closed deals', async () => {
+    const s = await period()
+    const report = await service.forecast(s.bm, PERIOD)
+
+    expect(report.pipeline.stages).toEqual([
+      { stage: 'new', open: 5, winRateBps: 2667, medianDays: 15 },
+      { stage: 'contacted', open: 5, winRateBps: 4000, medianDays: 15 },
+      { stage: 'advised', open: 5, winRateBps: 6000, medianDays: 15 },
+    ])
+    expect(report.basis.closedDeals).toBe(15)
+  })
+
+  /** The trailing year's pace over the eleven days that are left. Four wins
+   *  in a year is a hair over a hundredth of a deal a day, so it expects
+   *  nothing more to land — which, for a branch that has only ever closed
+   *  four deals, is the honest answer. */
+  it('reads the trailing year’s pace as the second estimate', async () => {
+    const s = await period()
+    const report = await service.forecast(s.bm, PERIOD)
+
+    expect(report.landed.won).toBe(4)
+    expect(report.expected.fromHistory).toBe(4)
+  })
+
+  /** Both estimates are wins per day. Weighting the open pipeline by its win
+   *  rates answers a different question — what the book is worth eventually —
+   *  and that number is reported separately rather than mistaken for this
+   *  period's: 5×0.2667 + 5×0.40 + 5×0.60 = 6.3 deals, whenever they land. */
+  it('keeps what the open book is worth apart from what the period will do', async () => {
+    const s = await period()
+    const report = await service.forecast(s.bm, PERIOD)
+
+    expect(report.pipeline.open).toBe(15)
+    expect(report.pipeline.worth).toBe(6)
+    expect(report.pipeline.stages.map((stage) => stage.medianDays)).toEqual([15, 15, 15])
+  })
+
+  /** Four deals in nine days, over twenty days, is 8.9. */
+  it('reads the clock as a second, independent estimate', async () => {
+    const s = await period()
+    const report = await service.forecast(s.bm, PERIOD)
+
+    expect(report.period).toMatchObject({ days: 20, elapsed: 9, remaining: 11 })
+    expect(report.expected.fromRunRate).toBe(9)
+  })
+
+  /** The two disagree, and the range is the answer. Printing either one alone
+   *  to the deal would be a confidence the data does not support. */
+  it('reports the range rather than picking a winner', async () => {
+    const s = await period()
+    const report = await service.forecast(s.bm, PERIOD)
+
+    expect(report.expected.low).toBe(4)
+    expect(report.expected.high).toBe(9)
+  })
+
+  /** The target moves as leads arrive, so it is projected on the same clock as
+   *  the wins: 30 leads in nine days is 67 over twenty, and 30% of 67 is 20. */
+  it('projects the target on the same clock as the wins', async () => {
+    const s = await period()
+    const report = await service.forecast(s.bm, PERIOD)
+
+    expect(report.target).toMatchObject({
+      crBps: 3000,
+      leadsToDate: 15,
+      leadsProjected: 33,
+      wonToDate: 5,
+      wonProjected: 10,
+    })
+  })
+
+  it('says what is missing now and what would still be missing at each end', async () => {
+    const s = await period()
+    const report = await service.forecast(s.bm, PERIOD)
+
+    expect(report.gap.today).toBe(1)
+    expect(report.gap.best).toBe(1)
+    expect(report.gap.worst).toBe(6)
+  })
+
+  /** A lead raised in August can close in September and counts towards
+   *  September when it does — so the pipeline is every open lead, not only the
+   *  ones the period itself raised. The target's intake is the opposite: that
+   *  one belongs to the period that raised it. */
+  it('counts open leads raised before the period, but not as intake', async () => {
+    const s = await period()
+    await makeOpportunity({
+      customerId: s.customerId,
+      ownerId: s.saleRb.id,
+      stage: 'advised',
+      createdAt: new Date(`${dayOffset(-40)}T00:00:00Z`),
+    })
+
+    const report = await service.forecast(s.bm, PERIOD)
+    expect(report.pipeline.open).toBe(16)
+    expect(report.target.leadsToDate).toBe(15)
+  })
+
+  /** Closed outside the period, so it is history for the rates and nothing for
+   *  the result. */
+  it('lands only what closed inside the period', async () => {
+    const s = await period()
+    await makeOpportunity({
+      customerId: s.customerId,
+      ownerId: s.saleRb.id,
+      stage: 'advised',
+      outcome: 'won',
+      closedAt: new Date(`${dayOffset(-60)}T00:00:00Z`),
+    })
+
+    const report = await service.forecast(s.bm, PERIOD)
+    expect(report.landed.won).toBe(4)
+    expect(report.basis.closedDeals).toBe(16)
+  })
+
+  /** A rate from two restructures ago is not this branch's rate. */
+  it('ignores history older than a year', async () => {
+    const s = await period()
+    await makeOpportunity({
+      customerId: s.customerId,
+      ownerId: s.saleRb.id,
+      stage: 'advised',
+      outcome: 'won',
+      closedAt: new Date(`${dayOffset(-400)}T00:00:00Z`),
+    })
+
+    const report = await service.forecast(s.bm, PERIOD)
+    expect(report.basis.closedDeals).toBe(15)
+  })
+
+  /** Nothing has elapsed, so there is no rate to stretch. The run-rate
+   *  estimate falls back to what has landed rather than dividing by zero and
+   *  rendering `Infinity` on a branch manager's screen. */
+  it('survives a period that has not started', async () => {
+    const s = await period()
+    const report = await service.forecast(s.bm, { from: dayOffset(10), to: dayOffset(30) })
+
+    expect(report.period.elapsed).toBe(0)
+    expect(report.expected.fromRunRate).toBe(0)
+    expect(report.target.leadsProjected).toBe(0)
+    expect(Number.isFinite(report.expected.high)).toBe(true)
+  })
+
+  /** Scoped like every other read. A salesperson forecasts their own book; the
+   *  colleague's leads are not in it. */
+  it('forecasts only what the reader may see', async () => {
+    const s = await period()
+    const other = await makeCustomer({ ownerId: s.saleSse.id, segment: 'sse' })
+    for (let i = 0; i < 20; i++) {
+      await makeOpportunity({
+        customerId: other.id,
+        ownerId: s.saleSse.id,
+        segment: 'sse',
+        stage: 'advised',
+      })
+    }
+
+    expect((await service.forecast(s.saleRb, PERIOD)).pipeline.open).toBe(15)
+    expect((await service.forecast(s.bm, PERIOD)).pipeline.open).toBe(35)
+  })
+})

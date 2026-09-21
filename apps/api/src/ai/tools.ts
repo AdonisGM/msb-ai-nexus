@@ -106,6 +106,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   get_breakdown: { deferred: true, risk: 'auto', renderer: 'breakdown.bars' },
   get_by_owner: { deferred: true, risk: 'auto', renderer: 'table.owners' },
   get_by_team: { deferred: true, risk: 'auto', renderer: 'table.teams' },
+  get_forecast: { deferred: true, risk: 'auto', renderer: null },
 
   /** Every write waits for a person. Not because the model cannot be trusted
    *  with the arguments — the services would refuse anything out of scope
@@ -645,6 +646,32 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
       inputSchema: RangeInput,
       run: async (input) =>
         reports.byOwner(user, { ...input, ownerId: await ownerIdOf(input.ownerId) }),
+    }),
+
+    read({
+      name: 'get_forecast',
+      description:
+        'Dự báo kết quả cuối kỳ: đã chốt được bao nhiêu, và sẽ chốt được bao nhiêu cả kỳ. ' +
+        'Trả về một KHOẢNG (expected.low–high) từ hai cách tính, không phải một con số — ' +
+        'fromRunRate là nhịp của chính kỳ này, fromHistory là nhịp 12 tháng áp cho số ngày còn lại. ' +
+        'pipeline.worth là chuyện KHÁC: phễu đang mở đáng bao nhiêu deal về lâu dài, ' +
+        'KHÔNG phải trong kỳ này — đừng nói nó như dự báo của kỳ. ' +
+        'Bắt buộc có from và to — gọi today trước nếu chưa biết kỳ. ' +
+        'basis.closedDeals là số deal đã đóng dùng để đo tỷ lệ: dưới 20 thì nói rõ là ước lượng thô.',
+      inputSchema: z.object({
+        from: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .describe('Ngày đầu kỳ, YYYY-MM-DD'),
+        to: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .describe('Ngày cuối kỳ, YYYY-MM-DD'),
+        segment: z.enum(SEGMENTS).optional(),
+        ownerId: z.string().optional().describe('Chỉ dự báo sổ của một nhân viên'),
+      }),
+      run: async (input) =>
+        reports.forecast(user, { ...input, ownerId: await ownerIdOf(input.ownerId) }),
     }),
 
     read({

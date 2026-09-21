@@ -154,3 +154,58 @@ export function monthlyQuery(range: ReportRange) {
     placeholderData: (previous) => previous,
   })
 }
+
+/** Where the period lands if it carries on as it has been going.
+ *
+ *  Two estimates rather than one, and both are wins per day: `fromRunRate` is
+ *  this period's own pace over the whole period, `fromHistory` is the trailing
+ *  year's pace over the days that are left. The screen shows the range between
+ *  them, because the spread is the answer — they separate when the quarter is
+ *  running hotter or colder than the year, which is the thing worth knowing.
+ *
+ *  `pipeline.worth` is a different question and is kept apart from the
+ *  forecast on purpose: what the open book is worth *eventually*, weighted by
+ *  each stage's measured win rate. A branch can be on pace and still be
+ *  emptying its pipeline. */
+export type Forecast = {
+  period: { from: string; to: string; days: number; elapsed: number; remaining: number }
+  landed: { won: number; lost: number; value: number }
+  pipeline: {
+    open: number
+    value: number
+    /** Wins the open book should eventually yield — not this period's. */
+    worth: number
+    stages: {
+      stage: LeadState
+      open: number
+      winRateBps: number
+      /** Median days a winning deal takes from this stage. Null when the
+       *  branch has never won one from here. */
+      medianDays: number | null
+    }[]
+  }
+  expected: { fromRunRate: number; fromHistory: number; low: number; high: number }
+  target: {
+    crBps: number
+    leadsToDate: number
+    /** The intake projected on the same clock as the wins, so the forecast is
+     *  not compared against a target for the fortnight that has happened. */
+    leadsProjected: number
+    wonToDate: number
+    wonProjected: number
+  }
+  /** `today` is what is missing right now; `best` and `worst` are what would
+   *  still be missing at the end of the period at each end of the range. */
+  gap: { today: number; best: number; worst: number }
+  /** How many closed deals the rates were measured from. Under twenty, the
+   *  screen says so rather than drawing a confident line through noise. */
+  basis: { closedDeals: number; months: number }
+}
+
+export function forecastQuery(range: ReportRange & { from: string; to: string }) {
+  return queryOptions({
+    queryKey: ['reports', 'forecast', range],
+    queryFn: () => api<Forecast>(`/reports/forecast${toSearch(range)}`),
+    placeholderData: (previous) => previous,
+  })
+}

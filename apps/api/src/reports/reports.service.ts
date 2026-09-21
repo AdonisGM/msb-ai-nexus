@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { BadRequestException, Inject, Injectable } from '@nestjs/common'
 import { and, count, eq, gte, isNotNull, isNull, lt, sql, type SQL } from 'drizzle-orm'
 import { alias, type PgColumn } from 'drizzle-orm/pg-core'
 import { opportunityScope } from '../auth/scope'
@@ -341,6 +341,241 @@ export class ReportsService {
       })
   }
 
+  /** Where the period lands if it carries on as it has been going.
+   *
+   *  The one projection in this file, and it is built the way everything else
+   *  here is: from deals that actually closed. The model this replaced held a
+   *  probability somebody typed into a field, which meant the forecast moved
+   *  when a salesperson felt optimistic. These rates come out of the branch's
+   *  own closed leads and move only when the branch does.
+   *
+   *  **Two estimates, and both of them are rates.** This took a wrong turn
+   *  worth recording. The obvious second estimate is the open pipeline
+   *  weighted by each stage's win rate — but that answers "what is the open
+   *  book worth", which is a stock, while the question is a flow: how many
+   *  deals land between now and the end of the period. On the real branch it
+   *  said 66 against a run rate of 25, because 405 open leads at 9% is 37 more
+   *  wins whether they land next week or next year. Filtering to the leads old
+   *  enough to be due moved it to 58 and did not fix anything, because the
+   *  mistake was the unit, not the count.
+   *
+   *  So both estimates are wins per day, measured over different windows and
+   *  applied to the days that are left:
+   *
+   *  - `fromRunRate` — this period's own pace, over the whole period.
+   *  - `fromHistory` — the trailing year's pace, over the days remaining.
+   *
+   *  They disagree when the quarter is running hotter or colder than the year,
+   *  which is the thing a branch manager actually wants to know. Reporting the
+   *  range is honest; picking one and printing it to the deal would not be.
+   *
+   *  The stage weighting survives as `pipeline.worth`: what the open book is
+   *  worth *eventually*, which is a real number and a useful one, as long as
+   *  nobody reads it as this quarter's.
+   *
+   *  `basis` carries how many closed deals the rates were measured from, so a
+   *  screen can refuse to draw a confident line through four data points. */
+  async forecast(user: User, query: ReportQuery) {
+    if (!query.from || !query.to) throw new BadRequestException('period_required')
+
+    const from = new Date(query.from)
+    const to = endOf(query.to)
+    const slice = this.slice(user, query)
+
+    const [landed] = await this.db
+      .select({
+        won: sql<number>`count(*) filter (where ${opportunities.outcome} = 'won')`.mapWith(Number),
+        lost: sql<number>`count(*) filter (where ${opportunities.outcome} = 'lost')`.mapWith(Number),
+        value: sql<number>`coalesce(sum(${opportunities.value}) filter (
+          where ${opportunities.outcome} = 'won'
+        ), 0)`.mapWith(Number),
+      })
+      .from(opportunities)
+      .where(and(...slice, gte(opportunities.closedAt, from), lt(opportunities.closedAt, to)))
+
+    /** The intake the target is measured against. Same definition as
+     *  `monthly`: a lead belongs to the period it was raised in. */
+    const [intake] = await this.db
+      .select({ leads: count() })
+      .from(opportunities)
+      .where(and(...slice, gte(opportunities.createdAt, from), lt(opportunities.createdAt, to)))
+
+    /** Everything still open, at whatever stage it has reached — not only what
+     *  was raised inside the period. A lead from August can close in September
+     *  and counts towards September when it does. */
+    const [pipeline] = await this.db
+      .select({
+        ...STAGE_COUNTS,
+        value: sql<number>`coalesce(sum(${opportunities.value}), 0)`.mapWith(Number),
+      })
+      .from(opportunities)
+      .where(and(...slice, eq(opportunities.outcome, 'open')))
+
+    /** How the branch has actually converted, measured over the year up to the
+     *  end of the period. A year rather than all of it, because a rate from
+     *  two restructures ago is not this branch's rate any more. */
+    const [history] = await this.db
+      .select({
+        closed: count(),
+        won: sql<number>`count(*) filter (where ${opportunities.outcome} = 'won')`.mapWith(Number),
+        reachedContacted: sql<number>`count(*) filter (
+          where ${opportunities.contactedAt} is not null
+        )`.mapWith(Number),
+        wonFromContacted: sql<number>`count(*) filter (
+          where ${opportunities.contactedAt} is not null and ${opportunities.outcome} = 'won'
+        )`.mapWith(Number),
+        reachedAdvised: sql<number>`count(*) filter (
+          where ${opportunities.advisedAt} is not null
+        )`.mapWith(Number),
+        wonFromAdvised: sql<number>`count(*) filter (
+          where ${opportunities.advisedAt} is not null and ${opportunities.outcome} = 'won'
+        )`.mapWith(Number),
+
+        /** How long a winning deal takes, per stage reached. The denominator
+         *  of the "is this lead due" question below. Null when the branch has
+         *  never won one from that stage — in which case its win rate is zero
+         *  too, and nothing it weights can be nonzero either. */
+        daysToWin: sql<number | null>`percentile_cont(0.5) within group (
+          order by extract(epoch from ${opportunities.closedAt} - ${opportunities.createdAt}) / 86400
+        ) filter (where ${opportunities.outcome} = 'won')`,
+        daysToWinContacted: sql<number | null>`percentile_cont(0.5) within group (
+          order by extract(epoch from ${opportunities.closedAt} - ${opportunities.createdAt}) / 86400
+        ) filter (
+          where ${opportunities.outcome} = 'won' and ${opportunities.contactedAt} is not null
+        )`,
+        daysToWinAdvised: sql<number | null>`percentile_cont(0.5) within group (
+          order by extract(epoch from ${opportunities.closedAt} - ${opportunities.createdAt}) / 86400
+        ) filter (
+          where ${opportunities.outcome} = 'won' and ${opportunities.advisedAt} is not null
+        )`,
+      })
+      .from(opportunities)
+      .where(
+        and(
+          ...slice,
+          isNotNull(opportunities.closedAt),
+          gte(opportunities.closedAt, yearBefore(to)),
+          lt(opportunities.closedAt, to),
+        ),
+      )
+
+    /** The clock. Elapsed is clamped into the period so a forecast asked for a
+     *  quarter that has not started yet, or one that finished last year, does
+     *  not divide by a negative number of days. */
+    const days = daysBetween(from, to)
+    const elapsed = Math.min(days, Math.max(0, daysBetween(from, startOfToday())))
+    const remaining = days - elapsed
+    const fromRunRate =
+      elapsed > 0 ? Math.round((Number(landed?.won ?? 0) * days) / elapsed) : Number(landed?.won ?? 0)
+
+    /** Three conditional rates: given a lead reached this stage, how often did
+     *  it end up won. A lead sitting at "contacted" is compared against every
+     *  lead that ever reached "contacted", including the ones that went on to
+     *  be advised — from where it stands now, that is the question. */
+    const measured = [
+      {
+        stage: 'new' as const,
+        open: Number(pipeline?.openNew ?? 0),
+        won: Number(history?.won ?? 0),
+        of: Number(history?.closed ?? 0),
+        medianDays: numberOrNull(history?.daysToWin),
+      },
+      {
+        stage: 'contacted' as const,
+        open: Number(pipeline?.openContacted ?? 0),
+        won: Number(history?.wonFromContacted ?? 0),
+        of: Number(history?.reachedContacted ?? 0),
+        medianDays: numberOrNull(history?.daysToWinContacted),
+      },
+      {
+        stage: 'advised' as const,
+        open: Number(pipeline?.openAdvised ?? 0),
+        won: Number(history?.wonFromAdvised ?? 0),
+        of: Number(history?.reachedAdvised ?? 0),
+        medianDays: numberOrNull(history?.daysToWinAdvised),
+      },
+    ]
+
+    const stages = measured.map(({ stage, open, won, of, medianDays }) => {
+      const winRateBps = rateBps(won, of)
+      return {
+        stage,
+        open,
+        winRateBps,
+        /** How long a winning deal takes from this stage. Context for the
+         *  reader rather than an input: it says whether the open book has any
+         *  chance of turning over inside the days that are left. */
+        medianDays: medianDays === null ? null : Math.round(medianDays),
+        /** Kept as a fraction of a deal rather than rounded here: three
+         *  roundings that each lose half a deal add up to a deal and a half
+         *  the branch never had. The sum is rounded once, below. */
+        worth: (open * winRateBps) / BPS_PER_UNIT,
+      }
+    })
+
+    /** The trailing year's pace, over the days that are left. A second rate
+     *  rather than a second way of counting the pipeline — see the note above
+     *  this method for why that distinction is the whole design. */
+    const windowDays = Math.max(1, daysBetween(yearBefore(to), to))
+    const fromHistory =
+      Number(landed?.won ?? 0) +
+      Math.round((Number(history?.won ?? 0) * remaining) / windowDays)
+
+    /** The target moves as leads arrive, so it is projected on the same clock
+     *  as the wins. Comparing a whole period's forecast against the target for
+     *  the fortnight that has happened so far would flatter every report. */
+    const leadsToDate = Number(intake?.leads ?? 0)
+    const leadsProjected =
+      elapsed > 0 ? Math.round((leadsToDate * days) / elapsed) : leadsToDate
+    const crBps = await this.crTarget(user)
+
+    const low = Math.min(fromHistory, fromRunRate)
+    const high = Math.max(fromHistory, fromRunRate)
+
+    return {
+      period: { from: query.from, to: query.to, days, elapsed, remaining },
+      landed: {
+        won: Number(landed?.won ?? 0),
+        lost: Number(landed?.lost ?? 0),
+        value: Number(landed?.value ?? 0),
+      },
+      pipeline: {
+        open: stages.reduce((sum, s) => sum + s.open, 0),
+        value: Number(pipeline?.value ?? 0),
+        /** What the open book is worth eventually — not this period. Kept
+         *  beside the forecast because it is the other half of the picture: a
+         *  branch can be on pace and still be emptying its pipeline. */
+        worth: Math.round(stages.reduce((sum, stage) => sum + stage.worth, 0)),
+        stages: stages.map(({ stage, open, winRateBps, medianDays }) => ({
+          stage,
+          open,
+          winRateBps,
+          medianDays,
+        })),
+      },
+      expected: { fromRunRate, fromHistory, low, high },
+      target: {
+        crBps,
+        leadsToDate,
+        leadsProjected,
+        wonToDate: dealsToTarget(leadsToDate, crBps, 0),
+        wonProjected: dealsToTarget(leadsProjected, crBps, 0),
+      },
+      gap: {
+        /** What is missing right now, against what the period has asked for so
+         *  far. The other two are what would still be missing at the end if
+         *  the period lands at each end of the range. */
+        today: dealsToTarget(leadsToDate, crBps, Number(landed?.won ?? 0)),
+        best: dealsToTarget(leadsProjected, crBps, high),
+        worst: dealsToTarget(leadsProjected, crBps, low),
+      },
+      /** How much history the rates above were measured from. A screen that
+       *  draws a confident forecast off three closed deals is lying with a
+       *  straight face, and only this number can tell it not to. */
+      basis: { closedDeals: Number(history?.closed ?? 0), months: 12 },
+    }
+  }
+
   /** The conversion rate this person is measured against, in basis points.
    *
    *  Read from `targets` rather than hard-coded, because it is a number the
@@ -362,6 +597,19 @@ export class ReportsService {
       .limit(1)
 
     return Number(row?.amount ?? DEFAULT_CR_BPS)
+  }
+
+  /** Who and what, without the dates.
+   *
+   *  `scope` bolts `from`/`to` onto `createdAt`, which is right for a report
+   *  about what a month brought in and wrong for a forecast, where three
+   *  different questions each want the window on a different column — closed
+   *  in the period, raised in the period, open regardless. */
+  private slice(user: User, query: ReportQuery): SQL[] {
+    const parts: (SQL | undefined)[] = [opportunityScope(this.db, user)]
+    if (query.segment) parts.push(eq(opportunities.segment, query.segment))
+    if (query.ownerId) parts.push(eq(opportunities.ownerId, query.ownerId))
+    return parts.filter((part): part is SQL => part !== undefined)
   }
 
   private scope(user: User, query: ReportQuery): SQL | undefined {
@@ -461,11 +709,60 @@ const QUEUE_COUNTS = {
   )`,
 }
 
+/** The three places an open lead can be standing, disjoint by construction —
+ *  the same split `funnel` draws its ring from, named once so the forecast and
+ *  the ring can never disagree about what "đã tư vấn" counts. */
+const STAGE_COUNTS = {
+  openNew: sql<number>`count(*) filter (where ${opportunities.contactedAt} is null)`,
+  openContacted: sql<number>`count(*) filter (
+    where ${opportunities.contactedAt} is not null and ${opportunities.advisedAt} is null
+  )`,
+  openAdvised: sql<number>`count(*) filter (where ${opportunities.advisedAt} is not null)`,
+}
+
 /** A date range's upper end is the day after, exclusive: `to=2026-09-20` has
  *  to include everything that happened on the twentieth. */
 function endOf(day: string): Date {
   const date = new Date(day)
   date.setDate(date.getDate() + 1)
   return date
+}
+
+/** `percentile_cont` comes back as a string from the driver when it is not
+ *  null, and as null on an empty set. Both have to be told apart from a real
+ *  zero, which is why this is not a `Number(x) || null`. */
+function numberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function yearBefore(date: Date): Date {
+  const start = new Date(date)
+  start.setFullYear(start.getFullYear() - 1)
+  return start
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+
+function daysBetween(from: Date, to: Date): number {
+  return Math.round((to.getTime() - from.getTime()) / MS_PER_DAY)
+}
+
+/** Today, on the same grid the range endpoints are parsed onto.
+ *
+ *  Two mistakes at once, and they pull in opposite directions. Reading the UTC
+ *  date gives yesterday for the first seven hours of every day at UTC+7, so
+ *  the date parts have to come from local time — the same care `today` takes
+ *  in the assistant's toolset. But `new Date('2026-09-01')` is UTC midnight,
+ *  and subtracting a *local* midnight from it leaves the answer seven hours
+ *  short of a whole number of days, which `daysBetween` then rounds one way in
+ *  Hanoi and the other in Lisbon.
+ *
+ *  So: the date the person sees, placed at UTC midnight. Both ends of every
+ *  subtraction then sit on the same grid and the day count is exact. */
+function startOfToday(): Date {
+  const now = new Date()
+  return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()))
 }
 

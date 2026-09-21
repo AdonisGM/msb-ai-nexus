@@ -48,4 +48,11 @@ export class ReportsController {
   monthly(@Req() req: AuthedRequest, @Query() query: ReportQuery) {
     return this.reports.monthly(req.user!, query)
   }
+
+  /** Requires both ends of the period, and says so with a 400 rather than
+   *  quietly forecasting all of history. */
+  @Get('forecast')
+  forecast(@Req() req: AuthedRequest, @Query() query: ReportQuery) {
+    return this.reports.forecast(req.user!, query)
+  }
 }

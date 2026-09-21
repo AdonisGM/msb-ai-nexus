@@ -5,6 +5,7 @@ import {
   breakdownQuery,
   byOwnerQuery,
   byTeamQuery,
+  forecastQuery,
   funnelQuery,
   monthlyQuery,
   pct,
@@ -17,13 +18,14 @@ import { opportunitiesQuery, type Opportunity, type OpportunityPage } from '~/ap
 import { Card, Chip, cx } from '~/components/ui/primitives'
 import { BlockSkeleton, ErrorState } from '~/components/ui/query-state'
 import { BreakdownChart, WinRateChart } from '~/components/reports/breakdown-chart'
+import { ForecastCard } from '~/components/reports/forecast-card'
 import { LeadStanding } from '~/components/reports/lead-standing'
 import { Trend } from '~/components/reports/trend-chart'
 import { SegmentedControl } from '~/components/ui/segmented'
 import { t, tCode } from '~/i18n'
 import { daysSince, dmDate } from '~/lib/dates'
 import { fmtNum, initials } from '~/lib/format'
-import { PERIODS, resolvePeriod, type PeriodId } from '~/lib/period'
+import { PERIODS, resolvePeriod, type Period, type PeriodId } from '~/lib/period'
 
 export const Route = createFileRoute('/_app/dashboard')({ component: DashboardScreen })
 
@@ -70,7 +72,7 @@ function DashboardScreen() {
       {isLead ? (
         <LeadDashboard range={range} label={period.label} daysLeft={period.daysLeft} />
       ) : (
-        <BranchDashboard range={range} />
+        <BranchDashboard range={range} period={period} />
       )}
     </div>
   )
@@ -269,10 +271,19 @@ const RANK_COLS = 'grid-cols-[32px_minmax(0,1.5fr)_150px_74px_82px_90px]'
 
 /* ───────────────────────────── Branch manager ───────────────────────────── */
 
-function BranchDashboard({ range }: { range: { from: string; to: string } }) {
+function BranchDashboard({
+  range,
+  period,
+}: {
+  range: { from: string; to: string }
+  period: Period
+}) {
   const funnel = useQuery(funnelQuery(range))
   const teams = useQuery(byTeamQuery(range))
   const months = useQuery(monthlyQuery({}))
+  /** To the end of the window, not to today like every other figure here —
+   *  projecting to the end of the quarter is the whole point of the card. */
+  const forecast = useQuery(forecastQuery({ from: period.from, to: period.end }))
   const [products, blockers, segments] = useQueries({
     queries: [
       breakdownQuery('product', range),
@@ -336,6 +347,12 @@ function BranchDashboard({ range }: { range: { from: string; to: string } }) {
           <Trend months={months.data ?? []} loading={months.isPending} />
         </div>
       </div>
+
+      <ForecastCard
+        data={forecast.data}
+        loading={forecast.isPending}
+        periodLabel={`${period.label}, còn ${period.daysLeft} ngày`}
+      />
 
       <div className="flex flex-wrap items-start gap-4">
         <div className="flex min-w-0 flex-[1_1_320px]">

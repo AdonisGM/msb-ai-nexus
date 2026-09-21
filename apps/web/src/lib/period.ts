@@ -14,6 +14,13 @@ export type Period = {
   /** The range, inclusive both ends, `YYYY-MM-DD`. */
   from: string
   to: string
+  /** The last day of the window itself, which `to` deliberately is not.
+   *
+   *  Every figure on the dashboard reads to today, so `to` is today. A
+   *  forecast is the one thing that needs the other date — projecting to the
+   *  end of the quarter is the whole question — and computing it a second
+   *  time at the call site is how the two come to disagree about February. */
+  end: string
   note: string
   /** Days left until the window closes. Zero once it has. */
   daysLeft: number
@@ -50,6 +57,7 @@ export function resolvePeriod(id: PeriodId, now = new Date()): Period {
       label: MONTHS[now.getMonth()],
       from: iso(start),
       to: today,
+      end: iso(end),
       note: `từ ${dm(iso(start))} đến ${dm(today)}/${now.getFullYear()}`,
       daysLeft: daysBetween(now, end),
     }
@@ -64,6 +72,7 @@ export function resolvePeriod(id: PeriodId, now = new Date()): Period {
       label: `Quý ${quarter + 1}`,
       from: iso(start),
       to: today,
+      end: iso(end),
       note: `từ ${dm(iso(start))} đến ${dm(today)}/${now.getFullYear()}`,
       daysLeft: daysBetween(now, end),
     }
@@ -76,6 +85,7 @@ export function resolvePeriod(id: PeriodId, now = new Date()): Period {
     label: `Năm ${now.getFullYear()}`,
     from: iso(start),
     to: today,
+    end: iso(end),
     note: `từ ${dm(iso(start))} đến ${dm(today)}/${now.getFullYear()}`,
     daysLeft: daysBetween(now, end),
   }
