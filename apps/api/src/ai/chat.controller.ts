@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -8,12 +9,17 @@ import {
   Post,
   Req,
   Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
 import type { Response } from 'express'
+import { STORAGE_ENABLED } from '../env'
 import { AuthGuard, type AuthedRequest } from '../auth/auth.guard'
 import { RolesGuard } from '../auth/roles.guard'
 import { AI_ENABLED } from './claude'
+import { MAX_UPLOAD_BYTES, type UploadedFile as UploadedFileBody } from './attachments.service'
 import { ChatService, type ChatEvent } from './chat.service'
 import { DecideToolCallDto, SendMessageDto, StartConversationDto } from './dto'
 
@@ -35,7 +41,7 @@ export class ChatController {
    *  without the feature, not like a product that is broken. */
   @Get('status')
   status() {
-    return { enabled: AI_ENABLED }
+    return { enabled: AI_ENABLED, attachments: AI_ENABLED && STORAGE_ENABLED }
   }
 
   @Get()
@@ -60,6 +66,58 @@ export class ChatController {
   @HttpCode(200)
   send(@Req() req: AuthedRequest, @Param('id') id: string, @Body() body: SendMessageDto) {
     return this.chat.send(req.user!, id, body)
+  }
+
+  /** Takes one file for the thread's next message and answers with the
+   *  reference the message will carry.
+   *
+   *  Separate from sending, so a photo uploads while the person is still
+   *  typing about it, and so the send itself stays a small JSON body. Held in
+   *  memory rather than on disk: the cap is ten megabytes, and the bytes go
+   *  straight on to storage.
+   *
+   *  `defParamCharset` because multipart filenames are decoded as Latin-1
+   *  otherwise, and "Hợp đồng.pdf" arrives as mojibake. */
+  @Post(':id/attachments')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+      defParamCharset: 'utf8',
+    }),
+  )
+  upload(
+    @Req() req: AuthedRequest,
+    @Param('id') id: string,
+    @UploadedFile() file: UploadedFileBody | undefined,
+  ) {
+    if (!file) throw new BadRequestException('attachment_required')
+    return this.chat.upload(req.user!, id, file)
+  }
+
+  /** A file back, for the chip and the preview.
+   *
+   *  Served with the type decided at upload, never the one the browser sent,
+   *  and `nosniff` from helmet, so a text file that happens to contain markup
+   *  is shown as text and never run as a page. */
+  @Get(':id/attachments/:attachmentId')
+  async attachment(
+    @Req() req: AuthedRequest,
+    @Res() res: Response,
+    @Param('id') id: string,
+    @Param('attachmentId') attachmentId: string,
+  ) {
+    const { row, bytes } = await this.chat.download(req.user!, id, attachmentId)
+
+    res.setHeader(
+      'content-type',
+      row.kind === 'text' ? 'text/plain; charset=utf-8' : row.mime,
+    )
+    res.setHeader('content-length', String(bytes.length))
+    res.setHeader('content-disposition', `inline; filename*=UTF-8''${encodeURIComponent(row.filename)}`)
+    /** Private: it is somebody's file behind their session, and no proxy in
+     *  between has any business keeping a copy. */
+    res.setHeader('cache-control', 'private, max-age=3600')
+    res.end(bytes)
   }
 
   /** Two endpoints rather than one with a boolean, so what a request does is

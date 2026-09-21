@@ -8,6 +8,7 @@
     "build": "pnpm --filter @nexus/web build",
     "db:up": "docker compose up -d db",
     "db:down": "docker compose stop db",
+    "files:up": "docker compose up -d files",
     "db:generate": "pnpm --filter @nexus/api db:generate",
     "db:migrate": "pnpm --filter @nexus/api db:migrate",
     "seed": "pnpm --filter @nexus/api seed",

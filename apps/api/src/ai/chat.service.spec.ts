@@ -30,8 +30,9 @@ import { ReportsService } from '../reports/reports.service'
 import { SignalsService } from '../signals/signals.service'
 import { TargetsService } from '../targets/targets.service'
 import { UsersService } from '../users/users.service'
-import { conversations, messages, signals, toolCalls } from '../db/schema'
+import { attachments, conversations, messages, signals, toolCalls } from '../db/schema'
 import { closeDb, resetDb, testDb } from '../test/db'
+import { MemoryStore } from '../test/memory-store'
 import {
   makeBranch,
   makeConversation,
@@ -39,6 +40,7 @@ import {
   makeMessage,
   makeToolCall,
 } from '../test/factories'
+import { AttachmentsService } from './attachments.service'
 import { ChatService, hashOf } from './chat.service'
 
 /** A conversation is somebody's working notes, not a branch record.
@@ -62,6 +64,8 @@ const sessions = new SessionService(testDb, {
   idleTimeoutMs: 0,
 })
 
+const store = new MemoryStore()
+
 const service = new ChatService(
   testDb,
   new CustomersService(testDb),
@@ -70,9 +74,16 @@ const service = new ChatService(
   new ReportsService(testDb),
   new UsersService(testDb, sessions),
   new TargetsService(testDb),
+  new AttachmentsService(testDb, store),
 )
 
-beforeEach(resetDb)
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+
+beforeEach(async () => {
+  await resetDb()
+  store.objects.clear()
+  store.failing = false
+})
 afterAll(closeDb)
 
 describe('whose conversation it is', () => {
@@ -383,5 +394,111 @@ describe('deciding a proposed write', () => {
     await expect(
       service.decide(p.saleRb, other.id, p.call.id, true),
     ).rejects.toBeInstanceOf(NotFoundException)
+  })
+})
+
+/** Files ride on the same ownership rule as everything else in a thread. The
+ *  checks on the file itself — what it is, how big — are the attachment
+ *  service's, and tested there. */
+describe('files in a thread', () => {
+  it('refuses an upload into a colleague’s thread', async () => {
+    const b = await makeBranch()
+    const theirs = await makeConversation({ ownerId: b.saleSse.id })
+
+    await expect(
+      service.upload(b.saleRb, theirs.id, { buffer: PNG, originalname: 'a.png' }),
+    ).rejects.toBeInstanceOf(NotFoundException)
+
+    expect(store.objects.size).toBe(0)
+  })
+
+  it('hides a colleague’s file behind a 404, even with its id in hand', async () => {
+    const b = await makeBranch()
+    const theirs = await makeConversation({ ownerId: b.saleSse.id })
+    const file = await service.upload(b.saleSse, theirs.id, { buffer: PNG, originalname: 'a.png' })
+
+    await expect(service.download(b.saleRb, theirs.id, file.id)).rejects.toBeInstanceOf(
+      NotFoundException,
+    )
+    /** Nor through a thread of their own: the file is looked up inside the
+     *  thread named, not by id alone. */
+    const mine = await makeConversation({ ownerId: b.saleRb.id })
+    await expect(service.download(b.saleRb, mine.id, file.id)).rejects.toBeInstanceOf(
+      NotFoundException,
+    )
+  })
+
+  it('gives the owner their file back, bytes and all', async () => {
+    const b = await makeBranch()
+    const thread = await makeConversation({ ownerId: b.saleRb.id })
+    const file = await service.upload(b.saleRb, thread.id, { buffer: PNG, originalname: 'a.png' })
+
+    const read = await service.download(b.saleRb, thread.id, file.id)
+    expect(read.row.mime).toBe('image/png')
+    expect(read.bytes.equals(PNG)).toBe(true)
+  })
+
+  it('refuses a message with neither words nor files', async () => {
+    const b = await makeBranch()
+    const thread = await makeConversation({ ownerId: b.saleRb.id })
+
+    await expect(service.send(b.saleRb, thread.id, { text: '' })).rejects.toThrow('text_required')
+    await expect(service.send(b.saleRb, thread.id, {})).rejects.toThrow('text_required')
+  })
+
+  /** Checked before the model is reached, so a borrowed id costs nothing and
+   *  sends nothing. */
+  it('refuses to send a file from somebody else’s thread', async () => {
+    const b = await makeBranch()
+    const theirs = await makeConversation({ ownerId: b.saleSse.id })
+    const file = await service.upload(b.saleSse, theirs.id, { buffer: PNG, originalname: 'a.png' })
+    const mine = await makeConversation({ ownerId: b.saleRb.id })
+
+    await expect(
+      service.send(b.saleRb, mine.id, { text: 'xem giúp', attachmentIds: [file.id] }),
+    ).rejects.toBeInstanceOf(NotFoundException)
+  })
+
+  /** The model being unreachable must not use the file up: the person should
+   *  be able to press send again with the same attachment. */
+  it('leaves a file free to send again when the turn fails', async () => {
+    const b = await makeBranch()
+    const thread = await makeConversation({ ownerId: b.saleRb.id })
+    const file = await service.upload(b.saleRb, thread.id, { buffer: PNG, originalname: 'a.png' })
+
+    await expect(
+      service.send(b.saleRb, thread.id, { attachmentIds: [file.id] }),
+    ).rejects.toThrow(/ai_not_configured/)
+
+    const [row] = await testDb.select().from(attachments)
+    expect(row.messageId).toBeNull()
+    expect(await testDb.select().from(messages)).toHaveLength(0)
+  })
+
+  it('deletes the files from storage along with the thread', async () => {
+    const b = await makeBranch()
+    const thread = await makeConversation({ ownerId: b.saleRb.id })
+    const other = await makeConversation({ ownerId: b.saleRb.id })
+    await service.upload(b.saleRb, thread.id, { buffer: PNG, originalname: 'a.png' })
+    await service.upload(b.saleRb, other.id, { buffer: PNG, originalname: 'b.png' })
+
+    await service.remove(b.saleRb, thread.id)
+
+    expect(await testDb.select().from(attachments)).toHaveLength(1)
+    expect([...store.objects.keys()]).toEqual([expect.stringContaining(other.id)])
+  })
+
+  /** A store that is down should not keep a thread on somebody's screen after
+   *  they asked for it gone. */
+  it('still deletes the thread when storage is unreachable', async () => {
+    const b = await makeBranch()
+    const thread = await makeConversation({ ownerId: b.saleRb.id })
+    await service.upload(b.saleRb, thread.id, { buffer: PNG, originalname: 'a.png' })
+    store.failing = true
+
+    await service.remove(b.saleRb, thread.id)
+
+    expect(await testDb.select().from(conversations)).toHaveLength(0)
+    expect(await testDb.select().from(attachments)).toHaveLength(0)
   })
 })

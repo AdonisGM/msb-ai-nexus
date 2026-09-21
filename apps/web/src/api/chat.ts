@@ -25,8 +25,20 @@ export type Renderer =
   | 'timeline.history'
   | null
 
+/** A file on a turn. Not an Anthropic block — the server keeps files by
+ *  reference and swaps the bytes in only when it asks the model. */
+export type Attachment = {
+  type: 'attachment'
+  id: string
+  kind: 'image' | 'pdf' | 'text'
+  name: string
+  mime: string
+  size: number
+}
+
 export type Block =
   | { type: 'text'; text: string }
+  | Attachment
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; tool_use_id: string; content?: unknown }
   | { type: 'thinking'; thinking?: string }
@@ -73,7 +85,7 @@ export type Thread = {
 export function chatStatusQuery() {
   return queryOptions({
     queryKey: ['chat', 'status'],
-    queryFn: () => api<{ enabled: boolean }>('/chat/status'),
+    queryFn: () => api<{ enabled: boolean; attachments?: boolean }>('/chat/status'),
     /** Whether a key is configured does not change while somebody is looking
      *  at the screen, and the answer decides whether a button exists at all. */
     staleTime: 5 * 60 * 1000,
@@ -104,6 +116,46 @@ export function startConversation(body: {
 
 export function deleteConversation(id: string) {
   return api<void>(`/chat/${id}`, { method: 'DELETE' })
+}
+
+/* ─────────────────────────────── Files ──────────────────────────────────── */
+
+/** What the server accepts, repeated here only to fail fast: picking a 30 MB
+ *  scan should say so at once, not after the upload. The server checks again
+ *  from the bytes, and its answer is the one that counts. */
+export const ATTACH_ACCEPT =
+  'image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,.txt,.md,.csv'
+
+export const ATTACH_MAX_PER_MESSAGE = 5
+
+export function attachLimitFor(file: File): number {
+  if (file.type.startsWith('image/')) return 5 * 1024 * 1024
+  if (file.type === 'application/pdf') return 10 * 1024 * 1024
+  return 256 * 1024
+}
+
+export function uploadAttachment(threadId: string, file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return api<Attachment>(`/chat/${threadId}/attachments`, { method: 'POST', form })
+}
+
+/** A file's bytes as an object URL.
+ *
+ *  Fetched rather than linked: the session cookie goes cross-origin only on
+ *  a request made with credentials, and an `<img src>` pointing at the API
+ *  would depend on cookie rules the rest of the app does not. The caller
+ *  revokes the URL when it is done with it. */
+export async function attachmentUrl(threadId: string, id: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/chat/${threadId}/attachments/${id}`, {
+    credentials: 'include',
+  })
+  if (!res.ok) throw new ApiError(res.status, 'attachment_not_found')
+  return URL.createObjectURL(await res.blob())
+}
+
+export function filesOf(message: ChatMessage): Attachment[] {
+  return message.content.filter((block): block is Attachment => block.type === 'attachment')
 }
 
 /* ───────────────────────────── Reading a turn ───────────────────────────── */

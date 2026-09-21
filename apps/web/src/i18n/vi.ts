@@ -292,6 +292,18 @@ export const vi = {
   'error.unexpected_response': 'Máy chủ không phản hồi đúng',
   'error.gone': 'Dữ liệu đã thay đổi trên máy chủ, đang tải lại',
   'error.unknown': 'Có lỗi xảy ra, vui lòng thử lại',
+  'error.text_required': 'Nhập câu hỏi hoặc đính kèm một tệp',
+  'error.attachment_required': 'Chưa chọn tệp',
+  'error.attachment_empty': 'Tệp trống',
+  'error.attachment_type_unsupported': 'Chỉ nhận ảnh (PNG, JPG, GIF, WEBP), PDF hoặc tệp văn bản',
+  'error.attachment_too_large': 'Tệp quá lớn: ảnh tối đa 5 MB, PDF 10 MB, văn bản 256 KB',
+  'error.File too large': 'Tệp quá lớn: ảnh tối đa 5 MB, PDF 10 MB, văn bản 256 KB',
+  'error.attachment_message_too_large': 'Các tệp cộng lại vượt 10 MB cho một tin nhắn',
+  'error.attachment_too_many': 'Tối đa 5 tệp cho một tin nhắn',
+  'error.attachment_duplicate': 'Một tệp bị đính kèm hai lần',
+  'error.attachment_not_found': 'Không tìm thấy tệp đính kèm',
+  'error.attachment_already_sent': 'Tệp này đã được gửi rồi',
+  'error.storage_not_configured': 'Máy chủ chưa cấu hình kho lưu tệp',
 } satisfies Record<string, string>
 
 export type Dict = typeof vi

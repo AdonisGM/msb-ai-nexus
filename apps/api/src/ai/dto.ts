@@ -1,5 +1,14 @@
 import { Transform } from 'class-transformer'
-import { IsIn, IsNotEmpty, IsOptional, IsString, MaxLength, ValidateIf } from 'class-validator'
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsIn,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+  ValidateIf,
+} from 'class-validator'
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value)
 
@@ -19,12 +28,23 @@ export class StartConversationDto {
 
 export class SendMessageDto {
   /** Capped well above anything a person types and well below anything that
-   *  would be a paste of a whole report. */
+   *  would be a paste of a whole report — a report belongs in an attachment.
+   *
+   *  Optional because a file can be the whole message; the service refuses a
+   *  turn with neither. */
+  @IsOptional()
   @Transform(trim)
   @IsString()
-  @IsNotEmpty({ message: 'text_required' })
   @MaxLength(4000, { message: 'text_too_long' })
-  text!: string
+  text?: string
+
+  /** Files uploaded to this thread beforehand, in the order they were added.
+   *  The count is checked again by the service, alongside ownership and size. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5, { message: 'attachment_too_many' })
+  @IsString({ each: true })
+  attachmentIds?: string[]
 }
 
 export class DecideToolCallDto {

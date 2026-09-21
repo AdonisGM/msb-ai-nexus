@@ -70,5 +70,20 @@ export const LANGFUSE_BASE_URL = process.env.LANGFUSE_BASE_URL || 'https://cloud
 
 export const LANGFUSE_ENABLED = Boolean(LANGFUSE_PUBLIC_KEY) && Boolean(LANGFUSE_SECRET_KEY)
 
+/** Where chat attachments live: any S3-compatible store. SeaweedFS in both
+ *  compose files, but nothing here knows that, so moving to a hosted bucket
+ *  later is four variables rather than a code change.
+ *
+ *  Optional in the same way the model key is. Without it the assistant still
+ *  answers; it just cannot take a file, and the web hides the paperclip. */
+export const S3_ENDPOINT = process.env.S3_ENDPOINT ?? ''
+export const S3_REGION = process.env.S3_REGION || 'us-east-1'
+export const S3_BUCKET = process.env.S3_BUCKET || 'nexus-attachments'
+export const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY ?? ''
+export const S3_SECRET_KEY = process.env.S3_SECRET_KEY ?? ''
+
+export const STORAGE_ENABLED =
+  S3_ENDPOINT !== '' && S3_ACCESS_KEY !== '' && S3_SECRET_KEY !== ''
+
 /* Cookie and session settings live in config/auth-config.ts, not here, so
  * there is one owner for them rather than two that can drift apart. */

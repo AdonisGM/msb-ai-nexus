@@ -1,16 +1,26 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Trash2, X } from 'lucide-react'
+import { FileText, Paperclip, Trash2, X } from 'lucide-react'
 import {
+  ATTACH_ACCEPT,
+  ATTACH_MAX_PER_MESSAGE,
+  attachLimitFor,
+  attachmentUrl,
+  chatStatusQuery,
   conversationsQuery,
   deleteConversation,
+  filesOf,
   startConversation,
   streamTurn,
   textOf,
   threadQuery,
+  uploadAttachment,
+  type Attachment,
+  type ChatMessage,
   type ChatToolCall,
   type Conversation,
 } from '~/api/chat'
+import { ApiError } from '~/api/client'
 import { cx } from '~/components/ui/primitives'
 import { tError } from '~/i18n'
 import { useWriteError } from '~/lib/use-write-error'
@@ -30,6 +40,22 @@ import { ToolCard } from './tool-card'
  *  "Mở form" on an approval card (the approval is the form — it already shows
  *  every argument, and a second path to the same write is a second place for
  *  them to disagree). */
+
+/** A file in the composer, from the moment it is picked until it is sent.
+ *
+ *  Uploaded straight away rather than with the message, so a photo is on its
+ *  way while the person is still typing about it. `preview` is a local object
+ *  URL for images — the server's copy is not needed to show what was just
+ *  picked from this very machine. */
+type Pending = {
+  key: string
+  name: string
+  kind: Attachment['kind']
+  preview?: string
+  state: 'uploading' | 'ready' | 'failed'
+  ref?: Attachment
+  error?: string
+}
 
 const QUICK = [
   'Hôm nay tôi nên làm gì trước?',
@@ -65,6 +91,10 @@ export function Assistant({
     if (prefill) setDraft(prefill)
   }, [prefill])
   const [keepContext, setKeepContext] = useState(true)
+
+  const status = useQuery(chatStatusQuery())
+  const canAttach = status.data?.attachments === true
+  const [pending, setPending] = useState<Pending[]>([])
 
   const list = useQuery({ ...conversationsQuery(), enabled: open })
   const thread = useQuery({ ...threadQuery(threadId), enabled: open && threadId !== null })
@@ -102,12 +132,15 @@ export function Assistant({
    *  loop runs — the assistant starts typing and their own question is still
    *  nowhere. Cleared at the same moment the preview is, so the stored turn
    *  takes its place rather than appearing beside it. */
-  const [echo, setEcho] = useState<string | null>(null)
+  const [echo, setEcho] = useState<{ text: string; files: Pending[] } | null>(null)
 
-  const run = async (path: string, body: unknown, said?: string) => {
+  /** Resolves to whether the turn went through, so a failed send can hand its
+   *  files back to the composer — they are still unsent on the server. */
+  const run = async (path: string, body: unknown, said?: { text: string; files: Pending[] }) => {
     setFailed('')
     setEcho(said ?? null)
     setLive({ text: '', tools: [] })
+    let ok = true
 
     try {
       await streamTurn(path, body, (event) => {
@@ -121,10 +154,12 @@ export function Assistant({
             tools: was?.tools.includes(event.name) ? was.tools : [...(was?.tools ?? []), event.name],
           }))
         } else if (event.kind === 'error') {
+          ok = false
           setFailed(event.message)
         }
       })
     } catch (error) {
+      ok = false
       setFailed(error instanceof Error ? error.message : 'unexpected_error')
     } finally {
       /** The stored turn replaces the preview — it has the ids, the tool
@@ -137,9 +172,85 @@ export function Assistant({
        *  the popup is now stale too. */
       void queryClient.invalidateQueries()
     }
+    return ok
   }
 
   const sending = live !== null
+
+  /** Files belong to a thread, so switching threads drops what was waiting. */
+  const clearPending = () => {
+    setPending((was) => {
+      for (const file of was) if (file.preview) URL.revokeObjectURL(file.preview)
+      return []
+    })
+  }
+
+  const ensureThread = async () =>
+    threadId ??
+    (
+      await startConversation(
+        keepContext && subject ? { subjectKind: subject.kind, subjectId: subject.id } : {},
+      )
+    ).id
+
+  const attach = (picked: File[]) => {
+    const room = ATTACH_MAX_PER_MESSAGE - pending.filter((file) => file.state !== 'failed').length
+    if (picked.length === 0) return
+    if (room <= 0) return setFailed('attachment_too_many')
+    setFailed('')
+
+    void (async () => {
+      const id = await ensureThread()
+      setThreadId(id)
+
+      await Promise.all(
+        picked.slice(0, room).map(async (file) => {
+          const key = `${file.name}-${file.size}-${Math.random()}`
+          const kind: Attachment['kind'] = file.type.startsWith('image/')
+            ? 'image'
+            : file.type === 'application/pdf'
+              ? 'pdf'
+              : 'text'
+          const tooBig = file.size > attachLimitFor(file)
+
+          setPending((was) => [
+            ...was,
+            {
+              key,
+              name: file.name,
+              kind,
+              preview: kind === 'image' && !tooBig ? URL.createObjectURL(file) : undefined,
+              state: tooBig ? 'failed' : 'uploading',
+              error: tooBig ? 'attachment_too_large' : undefined,
+            },
+          ])
+          if (tooBig) return
+
+          try {
+            const ref = await uploadAttachment(id, file)
+            setPending((was) =>
+              was.map((one) =>
+                one.key === key ? { ...one, state: 'ready', ref, kind: ref.kind } : one,
+              ),
+            )
+          } catch (error) {
+            const code = error instanceof ApiError ? error.message : 'unexpected_error'
+            setPending((was) =>
+              was.map((one) => (one.key === key ? { ...one, state: 'failed', error: code } : one)),
+            )
+          }
+        }),
+      )
+    })().catch((error: unknown) => void onWriteError(error))
+  }
+
+  const dropPending = (key: string) => {
+    setPending((was) => {
+      const gone = was.find((file) => file.key === key)
+      if (gone?.preview) URL.revokeObjectURL(gone.preview)
+      return was.filter((file) => file.key !== key)
+    })
+  }
 
   const remove = useMutation({
     mutationFn: (id: string) => deleteConversation(id),
@@ -180,27 +291,44 @@ export function Assistant({
    *  stored is independent of that ordering. */
   const last = messages[messages.length - 1]
   const showEcho =
-    echo !== null && !(last?.role === 'user' && textOf(last as never) === echo)
+    echo !== null &&
+    !(
+      last?.role === 'user' &&
+      textOf(last) === echo.text &&
+      filesOf(last).length === echo.files.length
+    )
   const calls = thread.data?.toolCalls ?? []
   const busy = sending
+  const uploading = pending.some((file) => file.state === 'uploading')
+  const ready = pending.filter((file) => file.state === 'ready')
 
   const submit = () => {
     const text = draft.trim()
-    if (!text || busy) return
+    if ((!text && ready.length === 0) || busy || uploading) return
     setDraft('')
+
+    const sent = ready
+    setPending((was) => was.filter((file) => file.state === 'failed'))
 
     void (async () => {
       /** A first message with no thread yet opens one, so nobody has to press
        *  "new" before they can type. */
-      const id =
-        threadId ??
-        (
-          await startConversation(
-            keepContext && subject ? { subjectKind: subject.kind, subjectId: subject.id } : {},
-          )
-        ).id
+      const id = await ensureThread()
       setThreadId(id)
-      await run(`/chat/${id}/messages/stream`, { text }, text)
+
+      const ok = await run(
+        `/chat/${id}/messages/stream`,
+        { text, attachmentIds: sent.map((file) => file.ref!.id) },
+        { text, files: sent },
+      )
+
+      if (ok) {
+        for (const file of sent) if (file.preview) URL.revokeObjectURL(file.preview)
+      } else {
+        /** The turn failed before the files were pinned to it, so they are
+         *  still sendable — back into the composer rather than lost. */
+        setPending((was) => [...sent, ...was])
+      }
     })()
   }
 
@@ -226,10 +354,14 @@ export function Assistant({
             rows={list.data ?? []}
             current={threadId}
             onPick={(id) => {
+              if (id !== threadId) clearPending()
               setThreadId(id)
               setShowSessions(false)
             }}
-            onNew={() => start.mutate()}
+            onNew={() => {
+              clearPending()
+              start.mutate()
+            }}
             onRemove={(id) => remove.mutate(id)}
           />
         ) : (
@@ -242,6 +374,7 @@ export function Assistant({
             />
 
             <Thread
+              threadId={threadId}
               messages={messages}
               calls={calls}
               echo={showEcho ? echo : null}
@@ -254,7 +387,7 @@ export function Assistant({
                 )
               }
               onPick={(text) =>
-                void run(`/chat/${threadId}/messages/stream`, { text }, text)
+                void run(`/chat/${threadId}/messages/stream`, { text }, { text, files: [] })
               }
               deciding={sending}
             />
@@ -265,6 +398,11 @@ export function Assistant({
               onSubmit={submit}
               busy={busy}
               showQuick={messages.length === 0}
+              canAttach={canAttach}
+              pending={pending}
+              onAttach={attach}
+              onDrop={dropPending}
+              canSend={(draft.trim() !== '' || ready.length > 0) && !uploading}
             />
           </>
         )}
@@ -431,6 +569,7 @@ function ContextBar({
 }
 
 function Thread({
+  threadId,
   messages,
   calls,
   echo,
@@ -440,9 +579,10 @@ function Thread({
   onPick,
   deciding,
 }: {
-  messages: Array<{ id: string; role: 'user' | 'assistant'; content: unknown[] }>
+  threadId: string | null
+  messages: ChatMessage[]
   calls: ChatToolCall[]
-  echo: string | null
+  echo: { text: string; files: Pending[] } | null
   live: { text: string; tools: string[] } | null
   failed: string
   onDecide: (callId: string, approve: boolean) => void
@@ -458,10 +598,11 @@ function Thread({
   const shown = messages
     .map((message) => ({
       message,
-      text: textOf(message as never),
+      text: textOf(message),
+      files: filesOf(message),
       calls: calls.filter((call) => call.messageId === message.id),
     }))
-    .filter((row) => row.text !== '' || row.calls.length > 0)
+    .filter((row) => row.text !== '' || row.files.length > 0 || row.calls.length > 0)
 
   /** Follows the text down as it is written, not just when a turn ends. */
   useEffect(() => {
@@ -484,8 +625,10 @@ function Thread({
       {shown.map((row) => (
         <Turn
           key={row.message.id}
-          message={row.message as never}
+          threadId={threadId}
+          message={row.message}
           text={row.text}
+          files={row.files}
           calls={row.calls}
           onDecide={onDecide}
           onPick={onPick}
@@ -494,10 +637,19 @@ function Thread({
       ))}
 
       {echo ? (
-        <div className="flex flex-col items-end">
-          <div className="max-w-[88%] rounded-[12px_12px_4px_12px] border border-accent bg-accent px-3 py-[9px] text-[13px] leading-[1.55] text-accent-fg">
-            <Markdown text={echo} inverted />
-          </div>
+        <div className="flex flex-col items-end gap-[7px]">
+          {echo.files.length > 0 ? (
+            <div className="flex max-w-[88%] flex-wrap justify-end gap-1.5">
+              {echo.files.map((file) => (
+                <LocalFile key={file.key} file={file} />
+              ))}
+            </div>
+          ) : null}
+          {echo.text ? (
+            <div className="max-w-[88%] rounded-[12px_12px_4px_12px] border border-accent bg-accent px-3 py-[9px] text-[13px] leading-[1.55] text-accent-fg">
+              <Markdown text={echo.text} inverted />
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -590,15 +742,19 @@ const TOOL_WORDS: Record<string, string> = {
 }
 
 function Turn({
+  threadId,
   message,
   text,
+  files,
   calls,
   onDecide,
   onPick,
   deciding,
 }: {
-  message: { id: string; role: 'user' | 'assistant'; content: never[] }
+  threadId: string | null
+  message: ChatMessage
   text: string
+  files: Attachment[]
   calls: ChatToolCall[]
   onDecide: (callId: string, approve: boolean) => void
   onPick: (text: string) => void
@@ -608,6 +764,14 @@ function Turn({
 
   return (
     <div className={cx('flex flex-col gap-[7px]', mine ? 'items-end' : 'items-start')}>
+      {files.length > 0 && threadId ? (
+        <div className={cx('flex max-w-[88%] flex-wrap gap-1.5', mine && 'justify-end')}>
+          {files.map((file) => (
+            <StoredFile key={file.id} threadId={threadId} file={file} />
+          ))}
+        </div>
+      ) : null}
+
       {text ? (
         <div
           className={cx(
@@ -641,13 +805,25 @@ function Composer({
   onSubmit,
   busy,
   showQuick,
+  canAttach,
+  pending,
+  onAttach,
+  onDrop,
+  canSend,
 }: {
   value: string
   onChange: (next: string) => void
   onSubmit: () => void
   busy: boolean
   showQuick: boolean
+  canAttach: boolean
+  pending: Pending[]
+  onAttach: (files: File[]) => void
+  onDrop: (key: string) => void
+  canSend: boolean
 }) {
+  const picker = useRef<HTMLInputElement>(null)
+
   return (
     <div className="flex flex-none flex-col gap-2 border-t border-line bg-surface px-3 pt-[9px] pb-[11px]">
       {showQuick ? (
@@ -669,12 +845,55 @@ function Composer({
         </div>
       ) : null}
 
+      {pending.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {pending.map((file) => (
+            <PendingChip key={file.key} file={file} onDrop={() => onDrop(file.key)} />
+          ))}
+        </div>
+      ) : null}
+
       <div className="flex items-end gap-2 rounded-[11px] border border-line2 bg-sunken py-1.5 pr-1.5 pl-[11px]">
+        {canAttach ? (
+          <>
+            <button
+              type="button"
+              onClick={() => picker.current?.click()}
+              disabled={busy}
+              aria-label="Đính kèm ảnh, PDF hoặc tệp văn bản"
+              title="Đính kèm ảnh, PDF hoặc tệp văn bản"
+              className="-ml-1 grid size-[30px] flex-none cursor-pointer place-items-center rounded-[8px] text-muted transition-colors hover:bg-surface hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Paperclip size={15} />
+            </button>
+            <input
+              ref={picker}
+              type="file"
+              multiple
+              accept={ATTACH_ACCEPT}
+              className="hidden"
+              onChange={(event) => {
+                onAttach([...(event.target.files ?? [])])
+                /** Cleared so picking the same file again still fires. */
+                event.target.value = ''
+              }}
+            />
+          </>
+        ) : null}
         <input
           type="text"
           value={value}
           disabled={busy}
           onChange={(event) => onChange(event.target.value)}
+          onPaste={(event) => {
+            /** A screenshot pasted into the box is the quickest way to show
+             *  the assistant something on the screen. */
+            if (!canAttach) return
+            const files = [...event.clipboardData.files]
+            if (files.length === 0) return
+            event.preventDefault()
+            onAttach(files)
+          }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
@@ -687,7 +906,7 @@ function Composer({
         <button
           type="button"
           onClick={onSubmit}
-          disabled={busy || value.trim() === ''}
+          disabled={busy || !canSend}
           className="h-[30px] flex-none cursor-pointer rounded-[8px] border border-accent bg-accent px-[13px] text-[12px] font-semibold text-accent-fg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Gửi
@@ -709,4 +928,130 @@ function when(iso: string): string {
 
   if (sameDay) return `Hôm nay, ${time}`
   return `${String(at.getDate()).padStart(2, '0')}/${String(at.getMonth() + 1).padStart(2, '0')}, ${time}`
+}
+
+/* ─────────────────────────────── Files ──────────────────────────────────── */
+
+function PendingChip({ file, onDrop }: { file: Pending; onDrop: () => void }) {
+  return (
+    <span
+      title={file.error ? tError(file.error) : file.name}
+      className={cx(
+        'flex h-[30px] max-w-[220px] items-center gap-1.5 rounded-[8px] border bg-raised pr-1 pl-1 text-[11.5px]',
+        file.state === 'failed' ? 'border-[var(--danger)] text-[var(--danger)]' : 'border-line2 text-ink2',
+      )}
+    >
+      {file.preview ? (
+        <img src={file.preview} alt="" className="size-[22px] flex-none rounded-[5px] object-cover" />
+      ) : (
+        <FileText size={14} className="ml-1 flex-none" />
+      )}
+      <span className="truncate">{file.name}</span>
+      {file.state === 'uploading' ? <span className="tia-dot flex-none" /> : null}
+      <button
+        type="button"
+        onClick={onDrop}
+        aria-label={`Bỏ ${file.name}`}
+        className="grid size-5 flex-none cursor-pointer place-items-center rounded-[5px] text-muted hover:bg-sunken"
+      >
+        <X size={11} />
+      </button>
+    </span>
+  )
+}
+
+/** A file just sent, drawn from the local copy until the stored turn lands. */
+function LocalFile({ file }: { file: Pending }) {
+  if (file.preview) {
+    return (
+      <img
+        src={file.preview}
+        alt={file.name}
+        className="max-h-[160px] max-w-[220px] rounded-[10px] border border-line object-cover"
+      />
+    )
+  }
+  return <FileBadge name={file.name} kind={file.kind} />
+}
+
+/** A file on a stored turn. Images load as thumbnails; anything else is a
+ *  chip that opens the file in a new tab. */
+function StoredFile({ threadId, file }: { threadId: string; file: Attachment }) {
+  const [src, setSrc] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (file.kind !== 'image') return
+    let url: string | null = null
+    let cancelled = false
+    attachmentUrl(threadId, file.id)
+      .then((made) => {
+        url = made
+        if (cancelled) URL.revokeObjectURL(made)
+        else setSrc(made)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [threadId, file.id, file.kind])
+
+  /** The tab is opened before the fetch, in the click itself — a window
+   *  opened after an await is a popup, and browsers block those. */
+  const openIt = () => {
+    const tab = window.open('', '_blank')
+    if (!tab) return
+    if (src) {
+      tab.location.href = src
+      return
+    }
+    attachmentUrl(threadId, file.id)
+      .then((url) => {
+        tab.location.href = url
+      })
+      .catch(() => tab.close())
+  }
+
+  if (file.kind === 'image') {
+    return (
+      <button type="button" onClick={openIt} className="cursor-zoom-in" title={file.name}>
+        {src ? (
+          <img
+            src={src}
+            alt={file.name}
+            className="max-h-[160px] max-w-[220px] rounded-[10px] border border-line object-cover"
+          />
+        ) : (
+          <span className="block h-[90px] w-[120px] rounded-[10px] border border-line bg-sunken" />
+        )}
+      </button>
+    )
+  }
+
+  return (
+    <button type="button" onClick={openIt} className="cursor-pointer" title={file.name}>
+      <FileBadge name={file.name} kind={file.kind} size={file.size} />
+    </button>
+  )
+}
+
+function FileBadge({ name, kind, size }: { name: string; kind: Attachment['kind']; size?: number }) {
+  return (
+    <span className="flex h-[38px] max-w-[240px] items-center gap-2 rounded-[10px] border border-line2 bg-raised px-2.5 text-left">
+      <FileText size={16} className="flex-none text-muted" />
+      <span className="flex min-w-0 flex-col">
+        <span className="truncate text-[12px] text-ink">{name}</span>
+        <span className="text-[10.5px] text-muted">
+          {kind === 'pdf' ? 'PDF' : kind === 'text' ? 'Văn bản' : 'Ảnh'}
+          {size !== undefined ? ` · ${bytes(size)}` : ''}
+        </span>
+      </span>
+    </span>
+  )
+}
+
+function bytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
 }

@@ -8,6 +8,7 @@ import {
   conversations,
   messages,
   toolCalls,
+  type Attachment,
   type Conversation,
   type User,
 } from '../db/schema'
@@ -22,6 +23,8 @@ import { claude, MODEL, OUTPUT_CONFIG, THINKING, TITLE_MODEL } from './claude'
 import { LANGFUSE_ENABLED } from './tracing'
 import { systemPrompt, TITLE_PROMPT } from './prompt'
 import { metaOf, requestTools, runApproved, type ToolSink } from './tools'
+import { AttachmentsService, refOf, type UploadedFile } from './attachments.service'
+import { filesToLoad, replay } from './replay'
 import type { SendMessageDto, StartConversationDto } from './dto'
 
 type Block = Anthropic.Beta.Messages.BetaContentBlockParam
@@ -45,16 +48,6 @@ export type ChatEvent =
   | { kind: 'error'; message: string }
 
 export type Emit = (event: ChatEvent) => void
-
-/** How many exchanges keep their tool results in full when a thread is
- *  replayed.
- *
- *  A tool result can be twenty-five rows of a report, and every turn after it
- *  pays for those rows again. Older ones are replaced by a one-line stand-in —
- *  the block stays, because the API refuses an assistant turn whose `tool_use`
- *  has no matching `tool_result`, but its contents go. The assistant keeps the
- *  thread of the conversation and loses the raw data it has already used. */
-const REPLAY_TURNS = 3
 
 /** A ceiling on the tool loop.
  *
@@ -83,6 +76,7 @@ export class ChatService {
     private readonly reports: ReportsService,
     private readonly users: UsersService,
     private readonly targets: TargetsService,
+    private readonly attachments: AttachmentsService,
   ) {}
 
   /** A person's threads, newest first.
@@ -166,14 +160,40 @@ export class ChatService {
 
   async remove(user: User, id: string): Promise<void> {
     await this.own(user, id)
+
+    /** Best effort. A store that is down should not keep a thread somebody
+     *  asked to delete on their screen; the bytes left behind are unreachable
+     *  once the rows are gone, and are the cheaper of the two failures. */
+    await this.attachments.purge(id).catch(() => undefined)
+
     await this.db.delete(conversations).where(eq(conversations.id, id))
+  }
+
+  /** Keeps a file for the next message in a thread. */
+  async upload(user: User, id: string, file: UploadedFile) {
+    const conversation = await this.own(user, id)
+    return this.attachments.upload(conversation, user, file)
+  }
+
+  /** A file from a thread, through its owner like everything else here. */
+  async download(user: User, id: string, attachmentId: string) {
+    const conversation = await this.own(user, id)
+    return this.attachments.read(conversation, attachmentId)
   }
 
   /** Says one thing and runs the loop until the assistant stops asking for
    *  tools. */
   async send(user: User, id: string, body: SendMessageDto, emit?: Emit) {
     const conversation = await this.own(user, id)
-    await this.turn(user, conversation, { role: 'user', content: body.text }, emit)
+
+    const text = body.text ?? ''
+    const files = await this.attachments.claim(conversation, user, body.attachmentIds ?? [])
+
+    /** A file on its own is a message — "here is the contract" needs no
+     *  words. Nothing at all is not. */
+    if (text === '' && files.length === 0) throw new BadRequestException('text_required')
+
+    await this.turn(user, conversation, { role: 'user', content: text }, emit, files)
 
     if (conversation.title === '') {
       await this.nameThread(user, conversation.id)
@@ -283,13 +303,19 @@ export class ChatService {
   /** One pass of the loop: say something, let the assistant work, store what
    *  came out. Shared by an ordinary message and by a decision, because from
    *  the model's side the two are the same thing — a person said something. */
-  private async turn(user: User, conversation: Conversation, said: Turn, emit?: Emit) {
+  private async turn(
+    user: User,
+    conversation: Conversation,
+    said: Turn,
+    emit?: Emit,
+    files: Attachment[] = [],
+  ) {
     /** One trace per turn, with the person and the thread on it, so a run can
      *  be found later by who asked rather than by a request id nobody kept.
      *
      *  A no-op when Langfuse is not configured — `propagateAttributes` still
      *  runs the callback, and the spans inside simply go nowhere. */
-    if (!LANGFUSE_ENABLED) return this.runTurn(user, conversation, said, emit)
+    if (!LANGFUSE_ENABLED) return this.runTurn(user, conversation, said, emit, files)
 
     return propagateAttributes(
       {
@@ -309,15 +335,37 @@ export class ChatService {
          *  itemisation — you can see what a turn cost and never why. */
         startActiveObservation('chat', async (span) => {
           span.update({ input: textOfTurn(said) })
-          const answer = await this.runTurn(user, conversation, said, emit)
+          const answer = await this.runTurn(user, conversation, said, emit, files)
           span.update({ output: answer })
           return answer
         }),
     )
   }
 
-  private async runTurn(user: User, conversation: Conversation, said: Turn, emit?: Emit) {
-    const history = await this.history(conversation.id)
+  private async runTurn(
+    user: User,
+    conversation: Conversation,
+    said: Turn,
+    emit?: Emit,
+    files: Attachment[] = [],
+  ) {
+    /** The turn as it is stored: files by reference, ahead of the words —
+     *  the order the API reads documents best in. The bytes are swapped in by
+     *  `replay`, for this request only. */
+    const stored: Turn = files.length
+      ? {
+          role: 'user',
+          content: [
+            ...files.map(refOf),
+            /** A file sent without words has an empty text block, which the
+             *  API refuses outright. */
+            ...normalise(said.content).filter((block) => block.type !== 'text' || block.text !== ''),
+          ] as Block[],
+        }
+      : said
+
+    const rows = [...(await this.history(conversation.id)), stored]
+    const sent = replay(rows, await this.attachments.blocks(filesToLoad(rows)))
 
     /** Collected as the tools run rather than dug out afterwards, because the
      *  SDK hands the model a JSON string and keeps nothing of the object the
@@ -361,7 +409,7 @@ export class ChatService {
         },
       ],
       tools: requestTools(this.services(), user, sink),
-      messages: [...history, said],
+      messages: sent,
       max_iterations: MAX_ITERATIONS,
       /** Streaming only when somebody is watching. The approval continuation
        *  and any future background use take the plain path, where a single
@@ -390,9 +438,13 @@ export class ChatService {
     /** Everything the runner added: the assistant turns and the tool-result
      *  turns it built between them. Sliced off the end rather than rebuilt,
      *  so what is stored is exactly what the model was sent. */
-    const produced = runner.params.messages.slice(history.length + 1) as Turn[]
+    const produced = runner.params.messages.slice(sent.length) as Turn[]
 
-    await this.persist(conversation, [said, ...produced], ran)
+    const [saidId] = await this.persist(conversation, [stored, ...produced], ran)
+    await this.attachments.link(
+      files.map((file) => file.id),
+      saidId,
+    )
 
     return produced.map(textOfTurn).filter(Boolean).join('\n\n')
   }
@@ -408,33 +460,15 @@ export class ChatService {
     }
   }
 
-  /** The thread as the model should see it again.
-   *
-   *  Older tool results are hollowed out on the way (see `REPLAY_TURNS`). */
+  /** The thread as stored. What the model sees of it is `replay`'s call. */
   private async history(conversationId: string): Promise<Turn[]> {
     const rows = await this.db
-      .select()
+      .select({ role: messages.role, content: messages.content })
       .from(messages)
       .where(eq(messages.conversationId, conversationId))
       .orderBy(asc(messages.seq))
 
-    const keepFrom = Math.max(0, rows.length - REPLAY_TURNS * 2)
-
-    return rows.map((row, index) => {
-      const content = row.content as Block[] | string
-      if (index >= keepFrom || typeof content === 'string') {
-        return { role: row.role as 'user' | 'assistant', content } as Turn
-      }
-
-      return {
-        role: row.role as 'user' | 'assistant',
-        content: content.map((block) =>
-          block.type === 'tool_result'
-            ? { ...block, content: '[kết quả cũ, đã lược bớt để tiết kiệm ngữ cảnh]' }
-            : block,
-        ),
-      } as Turn
-    })
+    return rows as Turn[]
   }
 
   /** Writes the turns and the tool calls, and moves the thread's clock. */
@@ -654,7 +688,7 @@ function record(message: Anthropic.Beta.Messages.BetaMessage, sent: Turn[]): voi
        *  array never ends on an assistant turn otherwise, because the runner
        *  only keeps going when the last reply asked for a tool, and it
        *  appends the result as a user turn before asking again. */
-      input: sent.at(-1)?.role === 'assistant' ? sent.slice(0, -1) : sent,
+      input: withoutFileBytes(sent.at(-1)?.role === 'assistant' ? sent.slice(0, -1) : sent),
       output: {
         content: message.content,
         stop_reason: message.stop_reason,
@@ -675,3 +709,25 @@ function record(message: Anthropic.Beta.Messages.BetaMessage, sent: Turn[]): voi
   ).end()
 }
 
+/** The request as a trace should hold it: every word, but no file bytes.
+ *
+ *  A five-page PDF is a few megabytes of base64 in every generation of every
+ *  loop, and a trace is for reading what was asked and what came back — the
+ *  file's name says which one it was. */
+function withoutFileBytes(turns: Turn[]): Turn[] {
+  return turns.map((turn) =>
+    typeof turn.content === 'string'
+      ? turn
+      : {
+          ...turn,
+          content: turn.content.map((block) =>
+            (block.type === 'image' || block.type === 'document') && block.source.type === 'base64'
+              ? ({
+                  ...block,
+                  source: { ...block.source, data: `[${block.source.data.length} ký tự base64]` },
+                } as Block)
+              : block,
+          ),
+        },
+  )
+}

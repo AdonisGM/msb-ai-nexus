@@ -6,6 +6,8 @@ import { ReportsModule } from '../reports/reports.module'
 import { SignalsModule } from '../signals/signals.module'
 import { TargetsModule } from '../targets/targets.module'
 import { UsersModule } from '../users/users.module'
+import { StorageModule } from '../storage/storage.module'
+import { AttachmentsService } from './attachments.service'
 import { ChatController } from './chat.controller'
 import { ChatService } from './chat.service'
 
@@ -21,8 +23,9 @@ import { ChatService } from './chat.service'
     ReportsModule,
     UsersModule,
     TargetsModule,
+    StorageModule,
   ],
   controllers: [ChatController],
-  providers: [ChatService],
+  providers: [ChatService, AttachmentsService],
 })
 export class AiModule {}

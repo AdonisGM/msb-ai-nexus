@@ -1101,6 +1101,52 @@ export const toolCalls = pgTable(
 
 export type ToolCall = typeof toolCalls.$inferSelect
 
+/** A file somebody gave the assistant: a photo, a PDF, a text file.
+ *
+ *  The bytes live in object storage under `objectKey`; this row is what the
+ *  file is and whose it is. A message refers to it by id rather than carrying
+ *  it, because a thread is replayed on every turn and a PDF inlined into
+ *  `messages.content` would be paid for — and stored — again each time.
+ *
+ *  Uploaded first and sent second, so `messageId` is null while a file sits in
+ *  the composer and is set, once, when the turn that carries it is stored. */
+export const attachments = pgTable(
+  'attachments',
+  {
+    id: text('id').primaryKey(),
+
+    conversationId: text('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+
+    messageId: text('message_id').references(() => messages.id, { onDelete: 'cascade' }),
+
+    uploadedById: text('uploaded_by_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    /** `image`, `pdf` or `text` — decided from the bytes, never from the name
+     *  or the type the browser claimed. */
+    kind: text('kind').notNull(),
+    mime: text('mime').notNull(),
+    filename: text('filename').notNull(),
+    size: integer('size').notNull(),
+    sha256: text('sha256').notNull(),
+
+    objectKey: text('object_key').notNull().unique(),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('attachments_conversation').on(t.conversationId),
+    index('attachments_message').on(t.messageId),
+    check('attachments_kind', sql`${t.kind} in ('image', 'pdf', 'text')`),
+    check('attachments_size', sql`${t.size} > 0`),
+  ],
+)
+
+export type Attachment = typeof attachments.$inferSelect
+
 /* No display labels live here, and none live anywhere else in the API.
  * The API speaks codes — `sale`, `sse`, `cv1` — and the web app owns the
  * dictionary that turns them into words. That keeps every user-facing string

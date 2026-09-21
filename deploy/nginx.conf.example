@@ -103,7 +103,9 @@ server {
     ssl_prefer_server_ciphers on;
 
     access_log /var/log/nginx/nexus-api.access.log;
-    client_max_body_size 8m;
+    # Tệp đính kèm của trợ lý tối đa 10 MB (PDF); thêm chút cho vỏ multipart.
+    # Thấp hơn thì nginx trả 413 trước khi API kịp nói lý do.
+    client_max_body_size 12m;
 
     # KHÔNG thêm header CORS ở đây. API tự đặt chúng theo đúng WEB_ORIGIN
     # trong .env. Nginx thêm một bộ nữa thì trình duyệt thấy hai dòng
