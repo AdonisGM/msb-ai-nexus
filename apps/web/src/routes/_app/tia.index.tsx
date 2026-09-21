@@ -1,16 +1,17 @@
-import { lazy, Suspense } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { chatStatusQuery } from '~/api/chat'
+import { Assistant } from '~/components/chat/assistant'
 import { Spark } from '~/components/chat/spark'
 import { Card } from '~/components/ui/primitives'
 import { BlockSkeleton } from '~/components/ui/query-state'
 
-/** Loaded with the screen, not with the shell — the same split the floating
- *  panel uses, so nobody who never opens Tia pays for its Markdown renderer. */
-const Assistant = lazy(() =>
-  import('~/components/chat/assistant').then((m) => ({ default: m.Assistant })),
-)
+/** Imported directly, not through `lazy()`. The router already splits this
+ *  route into its own chunk (`autoCodeSplitting`), so the assistant only loads
+ *  for this screen either way — and a second, nested lazy boundary made the
+ *  two load one after the other and paid React's suspense reveal throttle
+ *  twice: about a second on a first visit with the CPU idle. Imported here, it
+ *  arrives in the route's chunk, which the menu link preloads on hover. */
 
 export const Route = createFileRoute('/_app/tia/')({ component: TiaScreen })
 
@@ -43,15 +44,5 @@ function TiaScreen() {
     )
   }
 
-  return (
-    <Suspense
-      fallback={
-        <div className="p-6">
-          <BlockSkeleton rows={8} />
-        </div>
-      }
-    >
-      <Assistant open variant="page" onClose={() => {}} />
-    </Suspense>
-  )
+  return <Assistant open variant="page" onClose={() => {}} />
 }
