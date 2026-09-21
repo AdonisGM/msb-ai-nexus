@@ -352,14 +352,6 @@ function BranchDashboard({
         </div>
       </div>
 
-      <ForecastCard
-        data={forecast.data}
-        loading={forecast.isPending}
-        periodLabel={`${period.label}, còn ${period.daysLeft} ngày`}
-      />
-
-      <AttentionCard data={attention.data} loading={attention.isPending} />
-
       <div className="flex flex-wrap items-start gap-4">
         <div className="flex min-w-0 flex-[1_1_320px]">
           <BreakdownChart
@@ -400,6 +392,18 @@ function BranchDashboard({
       </div>
 
       <Teams rows={teams.data ?? []} loading={teams.isPending} />
+
+      {/** Below the breakdowns and the teams, which keep the place they had
+        *  before these two arrived: the page is read top-down in the order it
+        *  was learned, and the forecast and the stuck deals are the newer,
+        *  deeper reads. */}
+      <ForecastCard
+        data={forecast.data}
+        loading={forecast.isPending}
+        periodLabel={`${period.label}, còn ${period.daysLeft} ngày`}
+      />
+
+      <AttentionCard data={attention.data} loading={attention.isPending} />
     </div>
   )
 }

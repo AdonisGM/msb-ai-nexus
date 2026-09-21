@@ -79,9 +79,18 @@ export function ForecastCard({
         </span>
       </div>
 
-      <div className="mt-3 h-[76px] w-full">
-        <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 520, height: 76 }}>
-          <BarChart data={row} layout="vertical" margin={{ top: 4, right: 8, bottom: 4, left: 8 }}>
+      {/** A fixed bar thickness and room above it for the threshold label.
+        *  With one row of data Recharts gives the bar the whole band, which
+        *  turned a progress strip into a 60px slab, and a 4px top margin
+        *  clipped the label down to two stray ticks. */}
+      <div className="mt-3 h-[52px] w-full">
+        <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 520, height: 52 }}>
+          <BarChart
+            data={row}
+            layout="vertical"
+            barSize={14}
+            margin={{ top: 20, right: 8, bottom: 4, left: 8 }}
+          >
             <XAxis type="number" domain={[0, ceiling]} hide />
             <YAxis type="category" dataKey="name" hide />
 
