@@ -20,14 +20,20 @@ export const Route = createFileRoute('/_app/tia/')({ component: TiaScreen })
 function TiaScreen() {
   const status = useQuery(chatStatusQuery())
 
-  if (status.isPending) return <BlockSkeleton rows={8} />
+  if (status.isPending) {
+    return (
+      <div className="p-6">
+        <BlockSkeleton rows={8} />
+      </div>
+    )
+  }
 
   /** A demo machine with no key should read as a product without the
    *  feature, not as a broken screen — the same rule the header button
    *  follows by not appearing at all. */
   if (!status.data?.enabled) {
     return (
-      <Card className="items-center gap-2 py-12 text-center">
+      <Card className="m-6 items-center gap-2 py-12 text-center">
         <Spark size={36} />
         <span className="mt-1 text-[14px] font-semibold">Tia chưa được bật</span>
         <p className="max-w-[360px] text-[12.5px] text-muted">
@@ -38,7 +44,13 @@ function TiaScreen() {
   }
 
   return (
-    <Suspense fallback={<BlockSkeleton rows={8} />}>
+    <Suspense
+      fallback={
+        <div className="p-6">
+          <BlockSkeleton rows={8} />
+        </div>
+      }
+    >
       <Assistant open variant="page" onClose={() => {}} />
     </Suspense>
   )

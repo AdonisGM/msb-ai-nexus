@@ -496,7 +496,9 @@ export function Assistant({
 
   if (variant === 'page') {
     return (
-      <div className="flex h-[calc(100dvh-9rem)] min-h-[520px] overflow-hidden rounded-xl border border-line bg-surface">
+      /** Flush with the shell: the page gives it the full area under the bar,
+       *  so no card edge, no rounding, no height of its own to guess. */
+      <div className="flex min-h-0 flex-1 overflow-hidden bg-surface">
         {/** The threads stay in view on a wide screen — on Tia's own page
           *  switching between conversations is the navigation, not a detour. */}
         <aside className="hidden w-[272px] flex-none flex-col border-r border-line bg-raised md:flex">

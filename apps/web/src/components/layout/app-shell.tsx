@@ -50,6 +50,13 @@ export function AppShell({ user, children }: { user: Me; children: ReactNode }) 
   const [menuOpen, setMenuOpen] = useState(false)
   const items = navFor(user.role)
 
+  /** Screens that are one working surface rather than a page to read — Tia's
+   *  conversation — take the whole area under the bar: no reading width, no
+   *  margins, exactly the viewport's height, so the thread list and the chat
+   *  run to the edges and the composer sits on the bottom of the window. */
+  const pathname = useRouterState({ select: (state) => state.location.pathname })
+  const bleed = pathname === '/tia' || pathname === '/tia/'
+
   return (
     <PageSubjectProvider>
       <div className="relative flex min-h-screen flex-col bg-bg text-ink">
@@ -88,11 +95,20 @@ export function AppShell({ user, children }: { user: Me; children: ReactNode }) 
             </div>
           ) : null}
 
-          <main className="min-w-0 flex-1 px-4 pt-5 pb-14 sm:px-6 lg:px-8 lg:pt-7">
-            <div className="mx-auto flex flex-col gap-5" style={{ maxWidth: CONTENT_MAX }}>
+          {bleed ? (
+            <main
+              className="flex min-w-0 flex-1 flex-col"
+              style={{ height: `calc(100dvh - ${HEADER_H}px)` }}
+            >
               {children}
-            </div>
-          </main>
+            </main>
+          ) : (
+            <main className="min-w-0 flex-1 px-4 pt-5 pb-14 sm:px-6 lg:px-8 lg:pt-7">
+              <div className="mx-auto flex flex-col gap-5" style={{ maxWidth: CONTENT_MAX }}>
+                {children}
+              </div>
+            </main>
+          )}
         </div>
       </div>
     </PageSubjectProvider>
