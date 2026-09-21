@@ -55,4 +55,16 @@ export class ReportsController {
   forecast(@Req() req: AuthedRequest, @Query() query: ReportQuery) {
     return this.reports.forecast(req.user!, query)
   }
+
+  /** The open leads worth a manager's own time.
+   *
+   *  `from` and `to` are ignored here, unlike every other report on this
+   *  controller: what is stuck is stuck now, whichever month raised it, and a
+   *  quarter filter would quietly hide the lead that has been sitting since
+   *  June — which is the one the card exists to surface. `segment` and
+   *  `ownerId` still narrow it. */
+  @Get('attention')
+  attention(@Req() req: AuthedRequest, @Query() query: ReportQuery) {
+    return this.reports.attention(req.user!, query)
+  }
 }

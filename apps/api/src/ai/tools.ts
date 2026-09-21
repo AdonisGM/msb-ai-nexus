@@ -107,6 +107,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   get_by_owner: { deferred: true, risk: 'auto', renderer: 'table.owners' },
   get_by_team: { deferred: true, risk: 'auto', renderer: 'table.teams' },
   get_forecast: { deferred: true, risk: 'auto', renderer: null },
+  get_attention: { deferred: true, risk: 'auto', renderer: 'table.opportunities' },
 
   /** Every write waits for a person. Not because the model cannot be trusted
    *  with the arguments — the services would refuse anything out of scope
@@ -672,6 +673,21 @@ GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP. Tool không ghi gì ngay — h
       }),
       run: async (input) =>
         reports.forecast(user, { ...input, ownerId: await ownerIdOf(input.ownerId) }),
+    }),
+
+    read({
+      name: 'get_attention',
+      description:
+        'Những cơ hội đang mở cần quản lý để mắt: quá hạn, hoặc im lặng quá lâu. ' +
+        'Xếp theo giá trị giảm dần, mỗi dòng kèm reasons nói vì sao nó có mặt. ' +
+        'Trả về cả total (tất cả những cơ hội như vậy) và shownShareBps (mấy dòng này ' +
+        'chiếm bao nhiêu phần giá trị đang kẹt) — đừng nói mấy dòng trả về là tất cả.',
+      inputSchema: z.object({
+        segment: z.enum(SEGMENTS).optional(),
+        ownerId: z.string().optional().describe('Chỉ xét sổ của một nhân viên'),
+      }),
+      run: async (input) =>
+        reports.attention(user, { ...input, ownerId: await ownerIdOf(input.ownerId) }),
     }),
 
     read({

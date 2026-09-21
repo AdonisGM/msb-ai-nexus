@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import {
+  attentionQuery,
   breakdownQuery,
   byOwnerQuery,
   byTeamQuery,
@@ -18,6 +19,7 @@ import { opportunitiesQuery, type Opportunity, type OpportunityPage } from '~/ap
 import { Card, Chip, cx } from '~/components/ui/primitives'
 import { BlockSkeleton, ErrorState } from '~/components/ui/query-state'
 import { BreakdownChart, WinRateChart } from '~/components/reports/breakdown-chart'
+import { AttentionCard } from '~/components/reports/attention-card'
 import { ForecastCard } from '~/components/reports/forecast-card'
 import { LeadStanding } from '~/components/reports/lead-standing'
 import { Trend } from '~/components/reports/trend-chart'
@@ -284,6 +286,8 @@ function BranchDashboard({
   /** To the end of the window, not to today like every other figure here —
    *  projecting to the end of the quarter is the whole point of the card. */
   const forecast = useQuery(forecastQuery({ from: period.from, to: period.end }))
+  /** No period: what is stuck is stuck now, whichever month raised it. */
+  const attention = useQuery(attentionQuery())
   const [products, blockers, segments] = useQueries({
     queries: [
       breakdownQuery('product', range),
@@ -353,6 +357,8 @@ function BranchDashboard({
         loading={forecast.isPending}
         periodLabel={`${period.label}, còn ${period.daysLeft} ngày`}
       />
+
+      <AttentionCard data={attention.data} loading={attention.isPending} />
 
       <div className="flex flex-wrap items-start gap-4">
         <div className="flex min-w-0 flex-[1_1_320px]">

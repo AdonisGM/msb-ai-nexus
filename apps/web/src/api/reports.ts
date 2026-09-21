@@ -209,3 +209,48 @@ export function forecastQuery(range: ReportRange & { from: string; to: string })
     placeholderData: (previous) => previous,
   })
 }
+
+export type AttentionReason = 'overdue' | 'stale' | 'untouched'
+
+export type AttentionRow = {
+  id: string
+  code: string
+  customerName: string
+  ownerId: string
+  ownerName: string
+  segment: 'sse' | 'rb'
+  product: string
+  value: number
+  stage: string
+  dueDate: string | null
+  blockerCode: string | null
+  lastTouchAt: string
+  /** Why this row is on the list, decided by the server rather than re-derived
+   *  from dates against a clock in another timezone. */
+  reasons: AttentionReason[]
+}
+
+/** The open leads worth a manager's own time.
+ *
+ *  `total` is everything that qualifies; `rows` is the handful shown, and
+ *  `shownShareBps` says how much of the stuck value that handful covers — so
+ *  the card can never imply it is showing all of the problem. */
+export type Attention = {
+  total: number
+  value: number
+  /** How much of the whole open book is in this state. */
+  shareBps: number
+  openTotal: number
+  shownValue: number
+  shownShareBps: number
+  rows: AttentionRow[]
+}
+
+/** No date range: what is stuck is stuck now, whichever month raised it. */
+export function attentionQuery(range: Omit<ReportRange, 'from' | 'to'> = {}) {
+  return queryOptions({
+    queryKey: ['reports', 'attention', range],
+    queryFn: () => api<Attention>(`/reports/attention${toSearch(range)}`),
+    placeholderData: (previous) => previous,
+  })
+}

@@ -196,3 +196,52 @@ describe('daysBackToMonthStart', () => {
     expect(daysBackToMonthStart(3, new Date(2026, 1, 10))).toBe(71)
   })
 })
+
+/** The dataset has to look like a branch somebody works at, not only like a
+ *  branch with the right totals. These pin the property that was got wrong
+ *  once and would be invisible in every count: a live lead's last touch. */
+describe('what the open book looks like', () => {
+  const open = branch.deals.filter((deal) => deal.outcome === undefined)
+
+  /** How long ago anything last happened to a lead — the same coalesce the
+   *  reporting service runs, in the seed's own units. */
+  const silentFor = (deal: (typeof open)[number]) =>
+    deal.advisedDaysAgo ?? deal.contactedDaysAgo ?? deal.openedDaysAgo
+
+  it('leaves most live leads worked in the last week', () => {
+    const recent = open.filter((deal) => silentFor(deal) <= 7).length
+    expect(recent / open.length).toBeGreaterThan(0.55)
+  })
+
+  /** Written forward from the opening date instead of back from today, this
+   *  was 92% — and a queue that selects almost every row selects nothing.
+   *  Some neglect is the point of the queue, so it may not be zero either. */
+  it('leaves a believable minority of them neglected', () => {
+    const stale = open.filter((deal) => silentFor(deal) > 7).length
+    const share = stale / open.length
+
+    expect(share).toBeGreaterThan(0.1)
+    expect(share).toBeLessThan(0.45)
+  })
+
+  /** A lead cannot have been advised before it was called, and the replay
+   *  writes both marks straight onto the row — the database refuses the pair
+   *  outright, a thousand rows into a twenty-five second run. */
+  it('never advises a lead before it was contacted', () => {
+    for (const deal of branch.deals) {
+      if (deal.advisedDaysAgo === undefined) continue
+      expect(deal.contactedDaysAgo, deal.customerKey).toBeDefined()
+      expect(deal.advisedDaysAgo).toBeLessThanOrEqual(deal.contactedDaysAgo!)
+    }
+  })
+
+  /** Nor can anything have happened before the lead existed. */
+  it('never touches a lead before it was opened', () => {
+    for (const deal of branch.deals) {
+      const marks = [deal.contactedDaysAgo, deal.advisedDaysAgo].filter(
+        (mark): mark is number => mark !== undefined,
+      )
+      for (const mark of marks) expect(mark).toBeLessThanOrEqual(deal.openedDaysAgo)
+    }
+  })
+})

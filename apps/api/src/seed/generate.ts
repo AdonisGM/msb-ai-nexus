@@ -456,14 +456,41 @@ function finishDeal(d: Dice, profile: SalesProfile, draft: Draft): GenDeal {
         ? 'contacted'
         : 'advised'
 
+  /** When a live lead was last worked, counted back from today rather than
+   *  forward from the day it opened.
+   *
+   *  Forward was the obvious way to write it and it produced a branch nobody
+   *  works at: a lead opened two hundred days ago was called on day 190 and
+   *  then never again, so 92% of the open book read as "im lặng quá 7 ngày"
+   *  and the queue built on that rule held almost every row. A queue that
+   *  selects everything selects nothing.
+   *
+   *  Backwards from today instead: most live leads were touched in the last
+   *  week, and the tail is the genuinely neglected ones — which is what the
+   *  queue is for, and roughly a quarter of the book, which is what a branch
+   *  under pressure actually looks like. Closed leads keep their own
+   *  timeline; theirs ended when they closed. */
+  const touchedDaysAgo = outcome
+    ? undefined
+    : Math.min(openedDaysAgo, d.chance(0.74) ? d.int(0, 6) : d.int(7, 55))
+
   /** Days are counted back from today, so each step is a smaller number than
    *  the one before it. Clamped at zero, which is today. */
   const contactedDaysAgo =
-    reach === 'new' ? undefined : Math.max(0, openedDaysAgo - d.int(0, Math.min(12, openedDaysAgo)))
+    reach === 'new'
+      ? undefined
+      : outcome !== undefined
+        ? Math.max(0, openedDaysAgo - d.int(0, Math.min(12, openedDaysAgo)))
+        : reach === 'advised'
+          ? /** The call came before the advice, so it is the larger number. */
+            Math.min(openedDaysAgo, touchedDaysAgo! + d.int(1, 14))
+          : touchedDaysAgo!
   const advisedDaysAgo =
     reach !== 'advised' || contactedDaysAgo === undefined
       ? undefined
-      : Math.max(0, contactedDaysAgo - d.int(1, Math.min(16, contactedDaysAgo + 1)))
+      : outcome !== undefined
+        ? Math.max(0, contactedDaysAgo - d.int(1, Math.min(16, contactedDaysAgo + 1)))
+        : touchedDaysAgo!
 
   const lastStep = advisedDaysAgo ?? contactedDaysAgo ?? openedDaysAgo
   const closedDaysAgo = outcome

@@ -12,6 +12,7 @@ import {
   users,
   type User,
 } from '../db/schema'
+import { IS_OVERDUE, IS_STALE, IS_UNTOUCHED, LAST_TOUCH } from '../lib/lead-sql'
 import type { ReportQuery } from './dto'
 
 /** One calendar month of the trend, before the target arithmetic is added. */
@@ -576,6 +577,103 @@ export class ReportsService {
     }
   }
 
+  /** The open leads worth a manager's own time, biggest first.
+   *
+   *  The brief asks a branch manager which 20% of opportunities need them
+   *  personally. This is that list, and the two decisions in it are worth
+   *  stating.
+   *
+   *  **What qualifies.** Overdue, or silent for longer than the branch
+   *  tolerates — both from `lib/lead-sql`, so this card, the team lead's
+   *  queues and the lists behind them cannot drift apart. Never-contacted is
+   *  deliberately *not* a trigger on its own: a lead raised this morning has
+   *  not been contacted either, and a list that opens with today's intake is
+   *  a list a manager stops reading. A lead nobody called for a week is
+   *  already stale, because `LAST_TOUCH` falls back to the day it arrived.
+   *
+   *  **Ordered by value, not by lateness.** A team lead chases the oldest; a
+   *  branch manager has time for a handful of deals a week and should spend
+   *  it on the ones that move the number. The share of stuck value this list
+   *  actually covers comes back with it, so the screen can say "these ten are
+   *  62% of what is stuck" rather than implying they are all of it. */
+  async attention(user: User, query: ReportQuery, limit = 10) {
+    const slice = this.slice(user, query)
+    const owner = alias(users, 'owner')
+    const open = and(...slice, eq(opportunities.outcome, 'open'))
+    const stuck = and(open, sql`((${IS_OVERDUE}) or (${IS_STALE}))`)
+
+    const [rows, [totals], [everything]] = await Promise.all([
+      this.db
+        .select({
+          id: opportunities.id,
+          code: opportunities.code,
+          customerName: customers.name,
+          ownerId: opportunities.ownerId,
+          ownerName: owner.name,
+          segment: opportunities.segment,
+          product: opportunities.product,
+          value: opportunities.value,
+          stage: opportunities.stage,
+          dueDate: opportunities.dueDate,
+          blockerCode: opportunities.blockerCode,
+          lastTouchAt: sql<Date>`${LAST_TOUCH}`.mapWith(opportunities.createdAt),
+          /** Why this row is here, decided by the database rather than
+           *  re-derived on the screen from dates it would have to compare
+           *  against a clock in another timezone. */
+          overdue: sql<boolean>`(${IS_OVERDUE})`,
+          stale: sql<boolean>`(${IS_STALE})`,
+          untouched: sql<boolean>`(${IS_UNTOUCHED})`,
+        })
+        .from(opportunities)
+        .innerJoin(customers, eq(customers.id, opportunities.customerId))
+        .innerJoin(owner, eq(owner.id, opportunities.ownerId))
+        .where(stuck)
+        .orderBy(sql`${opportunities.value} desc`, sql`${LAST_TOUCH} asc`)
+        .limit(limit),
+
+      this.db
+        .select({
+          total: count(),
+          value: sql<number>`coalesce(sum(${opportunities.value}), 0)`.mapWith(Number),
+        })
+        .from(opportunities)
+        .where(stuck),
+
+      this.db
+        .select({
+          total: count(),
+          value: sql<number>`coalesce(sum(${opportunities.value}), 0)`.mapWith(Number),
+        })
+        .from(opportunities)
+        .where(open),
+    ])
+
+    const stuckValue = Number(totals?.value ?? 0)
+    const shown = rows.reduce((sum, row) => sum + Number(row.value), 0)
+
+    return {
+      /** Everything that qualifies, not just what fits on the card. */
+      total: Number(totals?.total ?? 0),
+      value: stuckValue,
+      /** How much of the branch's whole open book is in this state. */
+      shareBps: rateBps(stuckValue, Number(everything?.value ?? 0)),
+      openTotal: Number(everything?.total ?? 0),
+      /** What the rows below add up to, as a share of everything stuck — so
+       *  the card can say how much of the problem it is showing. */
+      shownValue: shown,
+      shownShareBps: rateBps(shown, stuckValue),
+      rows: rows.map((row) => ({
+        ...row,
+        value: Number(row.value),
+        reasons: [
+          row.overdue ? ('overdue' as const) : null,
+          row.stale ? ('stale' as const) : null,
+          row.untouched ? ('untouched' as const) : null,
+        ].filter((reason): reason is 'overdue' | 'stale' | 'untouched' => reason !== null),
+      })),
+    }
+  }
+
   /** The conversion rate this person is measured against, in basis points.
    *
    *  Read from `targets` rather than hard-coded, because it is a number the
@@ -687,26 +785,15 @@ const FUNNEL_COUNTS = {
   lost: sql<number>`count(*) filter (where ${opportunities.outcome} = 'lost')`,
 }
 
-/** The three queues a team lead works from, defined once so the dashboard and
- *  the lists behind it can never disagree about what "quá hạn" means.
- *
- *  `stale` is seven days, which is the design's number rather than one the
- *  branch has agreed — same caveat as everywhere else it appears. */
+/** The three queues a team lead works from, counted from the shared
+ *  definitions in `lib/lead-sql` so the dashboard, the lists behind it and the
+ *  branch manager's intervention card can never disagree about what "quá hạn"
+ *  means. */
 const QUEUE_COUNTS = {
   open: sql<number>`count(*) filter (where ${opportunities.outcome} = 'open')`,
-  overdue: sql<number>`count(*) filter (
-    where ${opportunities.outcome} = 'open'
-      and ${opportunities.dueDate} is not null
-      and ${opportunities.dueDate} < current_date
-  )`,
-  stale: sql<number>`count(*) filter (
-    where ${opportunities.outcome} = 'open'
-      and coalesce(${opportunities.advisedAt}, ${opportunities.contactedAt}, ${opportunities.createdAt})
-          < now() - interval '7 days'
-  )`,
-  untouched: sql<number>`count(*) filter (
-    where ${opportunities.outcome} = 'open' and ${opportunities.contactedAt} is null
-  )`,
+  overdue: sql<number>`count(*) filter (where ${IS_OVERDUE})`,
+  stale: sql<number>`count(*) filter (where ${IS_STALE})`,
+  untouched: sql<number>`count(*) filter (where ${IS_UNTOUCHED})`,
 }
 
 /** The three places an open lead can be standing, disjoint by construction —

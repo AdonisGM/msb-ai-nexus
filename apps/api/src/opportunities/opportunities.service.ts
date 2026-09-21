@@ -39,6 +39,7 @@ import {
   type Stage,
   type User,
 } from '../db/schema'
+import { LAST_TOUCH } from '../lib/lead-sql'
 import type { ActDto, CreateOpportunityDto, ListOpportunitiesDto, UpdateOpportunityDto } from './dto'
 import {
   AUDIT_KIND_OF,
@@ -75,14 +76,6 @@ const TRACKED = [
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
-/** When anything last happened to this lead.
- *
- *  Written once and used by the filter, the sort and the column the screen
- *  shows, because three copies of a `coalesce` is three chances for a list to
- *  disagree with the number printed on its own rows. The order matters: the
- *  advice is later than the call, and a lead nobody has touched falls back to
- *  the day it arrived, which is exactly how long it has been ignored. */
-const LAST_TOUCH = sql`coalesce(${opportunities.advisedAt}, ${opportunities.contactedAt}, ${opportunities.createdAt})`
 
 /** How a list is ordered, which is not a detail — it decides what the person
  *  looking at it does first.

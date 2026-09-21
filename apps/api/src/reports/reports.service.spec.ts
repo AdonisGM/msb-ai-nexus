@@ -576,3 +576,159 @@ describe('the end-of-period forecast', () => {
     expect((await service.forecast(s.bm, PERIOD)).pipeline.open).toBe(35)
   })
 })
+
+/* ────────────────────────── Cần BM can thiệp ─────────────────────────────── */
+
+/** A branch with four open leads in different states, so every rule about what
+ *  lands on a branch manager's list has something to fail against.
+ *
+ *  | lead    | value | state                          | on the list? |
+ *  |---------|-------|--------------------------------|--------------|
+ *  | huge    |  9 tỷ | silent 30 days                 | yes          |
+ *  | late    |  5 tỷ | due yesterday, touched today   | yes          |
+ *  | fresh   |  8 tỷ | raised today, nobody called    | no           |
+ *  | working |  7 tỷ | advised yesterday              | no           | */
+async function stuck() {
+  const branch = await makeBranch()
+  const customer = await makeCustomer({ ownerId: branch.saleRb.id, segment: 'rb' })
+  const at = (offset: number) => new Date(`${dayOffset(offset)}T00:00:00Z`)
+
+  const add = (shape: Record<string, unknown>) =>
+    makeOpportunity({ customerId: customer.id, ownerId: branch.saleRb.id, ...shape })
+
+  await add({
+    code: 'HUGE',
+    value: 9_000_000_000,
+    stage: 'contacted',
+    createdAt: at(-30),
+    contactedAt: at(-30),
+  })
+  await add({
+    code: 'LATE',
+    value: 5_000_000_000,
+    stage: 'advised',
+    dueDate: dayOffset(-1),
+    advisedAt: at(0),
+  })
+  await add({ code: 'FRESH', value: 8_000_000_000, createdAt: at(0) })
+  await add({ code: 'WORKING', value: 7_000_000_000, stage: 'advised', advisedAt: at(-1) })
+
+  return { ...branch, customerId: customer.id }
+}
+
+describe('what needs a branch manager', () => {
+  it('lists what is overdue or has gone silent, biggest first', async () => {
+    const s = await stuck()
+    const report = await service.attention(s.bm, {})
+
+    expect(report.rows.map((row) => row.code)).toEqual(['HUGE', 'LATE'])
+    expect(report.total).toBe(2)
+    expect(report.value).toBe(14_000_000_000)
+  })
+
+  /** A list that opens with this morning's intake is a list a manager stops
+   *  reading. Never-contacted only counts once it has also gone silent, which
+   *  it does by itself — `LAST_TOUCH` falls back to the day it arrived. */
+  it('leaves out a lead raised today that nobody has called yet', async () => {
+    const s = await stuck()
+    const report = await service.attention(s.bm, {})
+
+    expect(report.rows.map((row) => row.code)).not.toContain('FRESH')
+  })
+
+  it('picks up that same lead once it has been sitting a week', async () => {
+    const s = await stuck()
+    const customer = await makeCustomer({ ownerId: s.saleRb.id, segment: 'rb' })
+    await makeOpportunity({
+      customerId: customer.id,
+      ownerId: s.saleRb.id,
+      code: 'IGNORED',
+      value: 1_000_000_000,
+      createdAt: new Date(`${dayOffset(-10)}T00:00:00Z`),
+    })
+
+    const report = await service.attention(s.bm, {})
+    const row = report.rows.find((candidate) => candidate.code === 'IGNORED')
+    expect(row?.reasons).toEqual(['stale', 'untouched'])
+  })
+
+  /** A branch manager has time for a handful a week, so the card shows a
+   *  handful — and says how much of the problem that handful is. */
+  it('says how much of the stuck value the rows it shows cover', async () => {
+    const s = await stuck()
+    const report = await service.attention(s.bm, {}, 1)
+
+    expect(report.rows).toHaveLength(1)
+    expect(report.total).toBe(2)
+    expect(report.shownValue).toBe(9_000_000_000)
+    /** Nine of fourteen billion. */
+    expect(report.shownShareBps).toBe(6429)
+  })
+
+  it('reads the stuck value against the whole open book', async () => {
+    const s = await stuck()
+    const report = await service.attention(s.bm, {})
+
+    expect(report.openTotal).toBe(4)
+    /** 14 of 29 tỷ. */
+    expect(report.shareBps).toBe(4828)
+  })
+
+  it('names the reason each row is there', async () => {
+    const s = await stuck()
+    const report = await service.attention(s.bm, {})
+    const reasons = Object.fromEntries(report.rows.map((row) => [row.code, row.reasons]))
+
+    expect(reasons.HUGE).toEqual(['stale'])
+    expect(reasons.LATE).toEqual(['overdue'])
+  })
+
+  it('carries the customer and the person who owns the lead', async () => {
+    const s = await stuck()
+    const [row] = (await service.attention(s.bm, {})).rows
+
+    expect(row.ownerName).toBe(s.saleRb.name)
+    expect(row.customerName).toBeTruthy()
+  })
+
+  /** A closed lead is never overdue: once it is decided, the deadline stopped
+   *  mattering. */
+  it('drops a lead once it closes, however late it was', async () => {
+    const s = await stuck()
+    await testDb
+      .update(opportunities)
+      .set({ outcome: 'won', closedAt: new Date(), outcomeReason: 'Chốt muộn' })
+      .where(eq(opportunities.code, 'LATE'))
+
+    const report = await service.attention(s.bm, {})
+    expect(report.rows.map((row) => row.code)).toEqual(['HUGE'])
+  })
+
+  it('shows a team lead only their own people', async () => {
+    const s = await stuck()
+    const other = await makeCustomer({ ownerId: s.saleSse.id, segment: 'sse' })
+    await makeOpportunity({
+      customerId: other.id,
+      ownerId: s.saleSse.id,
+      segment: 'sse',
+      code: 'SSE-STUCK',
+      value: 20_000_000_000,
+      createdAt: new Date(`${dayOffset(-30)}T00:00:00Z`),
+    })
+
+    expect((await service.attention(s.bm, {})).total).toBe(3)
+    expect((await service.attention(s.leadRb, {})).total).toBe(2)
+    expect((await service.attention(s.leadSse, {})).rows.map((row) => row.code)).toEqual([
+      'SSE-STUCK',
+    ])
+  })
+
+  it('reports nothing rather than dividing by nothing on an empty branch', async () => {
+    const branch = await makeBranch()
+    const report = await service.attention(branch.bm, {})
+
+    expect(report.rows).toEqual([])
+    expect(report.shareBps).toBe(0)
+    expect(report.shownShareBps).toBe(0)
+  })
+})
