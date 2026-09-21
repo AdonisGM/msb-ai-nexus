@@ -18,9 +18,10 @@ import { ReportsService } from '../reports/reports.service'
 import { SignalsService } from '../signals/signals.service'
 import { TargetsService } from '../targets/targets.service'
 import { UsersService } from '../users/users.service'
-import { BLOCKER_CODES, PRODUCTS, signals, type User } from '../db/schema'
+import { BLOCKER_CODES, opportunities, PRODUCTS, signals, type User } from '../db/schema'
 import { closeDb, resetDb, testDb } from '../test/db'
 import { makeBranch, makeCustomer, makeOpportunity, makeUser } from '../test/factories'
+import { eq } from 'drizzle-orm'
 import { buildTools, metaOf, runApproved, TOOL_META, type ToolSink } from './tools'
 
 /** The assistant reaches the same data through the same services as a request
@@ -574,5 +575,109 @@ describe('searching the web', () => {
 
     expect(() => schema({ query: 'CCCD 001203004567', reason: 'cần tra' })).toThrow()
     expect(() => schema({ query: 'Công ty Đại Dương 2026', reason: 'cần tra' })).not.toThrow()
+  })
+})
+
+/** Every screen and every search row shows `OPP-2026-0952` and `CUS-RB-175`;
+ *  the services want the id behind them. The model passes the code often
+ *  enough to matter — a branch manager was told "not found" about the lead
+ *  open on their own screen. */
+describe('naming a record by its code', () => {
+  async function coded() {
+    const b = await makeBranch()
+    const mine = await makeCustomer({ ownerId: b.saleRb.id, segment: 'rb', code: 'CUS-RB-175' })
+    const theirs = await makeCustomer({ ownerId: b.saleSse.id, segment: 'sse', code: 'CUS-SSE-9' })
+    const lead = await makeOpportunity({
+      customerId: mine.id,
+      ownerId: b.saleRb.id,
+      segment: 'rb',
+      code: 'OPP-2026-0952',
+    })
+    const other = await makeOpportunity({
+      customerId: theirs.id,
+      ownerId: b.saleSse.id,
+      segment: 'sse',
+      code: 'OPP-2026-0001',
+    })
+    return { ...b, mine, theirs, lead, other }
+  }
+
+  it('reads a lead by its code', async () => {
+    const c = await coded()
+    const found = await toolset(c.saleRb)('get_opportunity', { opportunityId: 'OPP-2026-0952' })
+    expect(found.id).toBe(c.lead.id)
+  })
+
+  it('reads a lead’s history by its code, in any case', async () => {
+    const c = await coded()
+    const history = await toolset(c.saleRb)('get_opportunity_history', {
+      opportunityId: 'opp-2026-0952',
+    })
+    expect(history.error).toBeUndefined()
+  })
+
+  it('reads a customer and their signals by the customer code', async () => {
+    const c = await coded()
+    const call = toolset(c.saleRb)
+    expect((await call('get_customer', { customerId: 'CUS-RB-175' })).id).toBe(c.mine.id)
+    expect((await call('get_customer_signals', { customerId: 'CUS-RB-175' })).error).toBeUndefined()
+  })
+
+  it('filters a search by customer code', async () => {
+    const c = await coded()
+    const page = (await toolset(c.saleRb)('search_opportunities', { customerId: 'CUS-RB-175' })) as {
+      rows: Array<{ id: string }>
+    }
+    expect(page.rows.map((row) => row.id)).toEqual([c.lead.id])
+  })
+
+  /** A code is looked up through the same scope as everything else: another
+   *  salesperson's code resolves to nothing, exactly as their id would. */
+  it('does not resolve a code outside the person’s scope', async () => {
+    const c = await coded()
+    const found = await toolset(c.saleRb)('get_opportunity', { opportunityId: 'OPP-2026-0001' })
+    expect(found.error).toMatch(/Không có cơ hội mã/)
+  })
+
+  /** The case that was reported: a branch manager reading a lead in their
+   *  unit, by the code on the screen. */
+  it('resolves for a branch manager, who sees the whole unit', async () => {
+    const c = await coded()
+    const found = await toolset(c.bm)('get_opportunity', { opportunityId: 'OPP-2026-0952' })
+    expect(found.id).toBe(c.lead.id)
+  })
+
+  it('still takes a plain id', async () => {
+    const c = await coded()
+    const found = await toolset(c.saleRb)('get_opportunity', { opportunityId: c.lead.id })
+    expect(found.id).toBe(c.lead.id)
+  })
+
+  /** The card shows the code the model wrote; the write lands on the record
+   *  behind it. */
+  it('writes an approved change to the lead the code names', async () => {
+    const c = await coded()
+
+    await runApproved(services, c.saleRb, 'set_next_action', {
+      opportunityId: 'OPP-2026-0952',
+      nextAction: 'Gọi lại xác nhận',
+    })
+
+    const [row] = await testDb.select().from(opportunities).where(eq(opportunities.id, c.lead.id))
+    expect(row.nextAction).toBe('Gọi lại xác nhận')
+  })
+
+  it('writes nothing when an approved change names someone else’s lead by code', async () => {
+    const c = await coded()
+
+    await expect(
+      runApproved(services, c.saleRb, 'set_next_action', {
+        opportunityId: 'OPP-2026-0001',
+        nextAction: 'Không phải của tôi',
+      }),
+    ).rejects.toThrow()
+
+    const [row] = await testDb.select().from(opportunities).where(eq(opportunities.id, c.other.id))
+    expect(row.nextAction).not.toBe('Không phải của tôi')
   })
 })

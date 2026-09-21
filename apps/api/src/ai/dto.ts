@@ -45,6 +45,19 @@ export class SendMessageDto {
   @ArrayMaxSize(5, { message: 'attachment_too_many' })
   @IsString({ each: true })
   attachmentIds?: string[]
+
+  /** The record on screen when the message was sent, if the person left it
+   *  attached. Only the reference travels: the server reads the record through
+   *  the person's own scope and writes the name itself, so nothing the browser
+   *  claims about the record reaches the model. */
+  @IsOptional()
+  @IsIn(['customer', 'opportunity'], { message: 'context_kind_invalid' })
+  contextKind?: 'customer' | 'opportunity'
+
+  @ValidateIf((body: SendMessageDto) => body.contextKind !== undefined)
+  @IsString()
+  @IsNotEmpty({ message: 'context_id_required' })
+  contextId?: string
 }
 
 export class DecideToolCallDto {

@@ -17,11 +17,14 @@ import {
   threadQuery,
   uploadAttachment,
   type Attachment,
+  contextOf,
   type ChatMessage,
   type ChatToolCall,
+  type ContextBlock,
   type Conversation,
 } from '~/api/chat'
 import { ApiError } from '~/api/client'
+import type { PageSubject } from '~/lib/page-subject'
 import { cx } from '~/components/ui/primitives'
 import { tError } from '~/i18n'
 import { useWriteError } from '~/lib/use-write-error'
@@ -64,6 +67,22 @@ const QUICK = [
   'Tháng này tôi đang thế nào?',
 ]
 
+/** Opened from a record, the first questions are about that record. Said as
+ *  "khách này" / "cơ hội này" because the context note tells the model which
+ *  one — the chip above is what makes the pronoun mean something. */
+const QUICK_FOR: Record<PageSubject['kind'], string[]> = {
+  customer: [
+    'Tóm tắt nhanh khách này',
+    'Nên hỏi khách này gì trong lần gặp tới?',
+    'Khách này còn thiếu sản phẩm nào?',
+  ],
+  opportunity: [
+    'Cơ hội này đang vướng ở đâu?',
+    'Bước tiếp theo nên làm gì?',
+    'Tóm tắt vết xử lý của cơ hội này',
+  ],
+}
+
 export function Assistant({
   open,
   onClose,
@@ -92,6 +111,17 @@ export function Assistant({
     if (prefill) setDraft(prefill)
   }, [prefill])
   const [keepContext, setKeepContext] = useState(true)
+
+  /** A new record on screen is offered afresh, even if the last one was
+   *  dropped — dropping is about that record, not a setting. */
+  useEffect(() => {
+    setKeepContext(true)
+  }, [subject?.kind, subject?.id])
+
+  /** What rides along with a message: the record on screen, by reference,
+   *  unless the person dropped it. */
+  const contextBody = () =>
+    keepContext && subject ? { contextKind: subject.kind, contextId: subject.id } : {}
 
   const status = useQuery(chatStatusQuery())
   const canAttach = status.data?.attachments === true
@@ -217,8 +247,8 @@ export function Assistant({
 
   /** Stable across renders, so the memoised turns below do not all redraw
    *  because a new arrow function was passed down on each frame of text. */
-  const latest = useRef({ run, threadId })
-  latest.current = { run, threadId }
+  const latest = useRef({ run, threadId, contextBody })
+  latest.current = { run, threadId, contextBody }
 
   const decide = useCallback((callId: string, approve: boolean) => {
     const { run, threadId } = latest.current
@@ -231,8 +261,8 @@ export function Assistant({
   }, [])
 
   const pick = useCallback((text: string) => {
-    const { run, threadId } = latest.current
-    void run(`/chat/${threadId}/messages/stream`, { text }, { text, files: [] })
+    const { run, threadId, contextBody } = latest.current
+    void run(`/chat/${threadId}/messages/stream`, { text, ...contextBody() }, { text, files: [] })
   }, [])
 
   const sending = live !== null
@@ -379,7 +409,7 @@ export function Assistant({
 
       const ok = await run(
         `/chat/${id}/messages/stream`,
-        { text, attachmentIds: sent.map((file) => file.ref!.id) },
+        { text, attachmentIds: sent.map((file) => file.ref!.id), ...contextBody() },
         { text, files: sent },
       )
 
@@ -452,6 +482,7 @@ export function Assistant({
               onSubmit={submit}
               busy={busy}
               showQuick={messages.length === 0}
+              quick={keepContext && subject ? QUICK_FOR[subject.kind] : QUICK}
               canAttach={canAttach}
               pending={pending}
               onAttach={attach}
@@ -587,7 +618,7 @@ function ContextBar({
   onDrop,
   onRestore,
 }: {
-  subject?: { label: string }
+  subject?: PageSubject
   keeping: boolean
   onDrop: () => void
   onRestore: () => void
@@ -596,9 +627,17 @@ function ContextBar({
 
   return (
     <div className="flex flex-none flex-wrap items-center gap-[7px] border-b border-line bg-raised px-3 py-2">
-      <span className="flex-none text-[10.5px] text-muted">Ngữ cảnh</span>
+      <span className="flex-none text-[10.5px] text-muted">
+        {keeping ? 'Đang hỏi về' : 'Không gửi kèm trang này'}
+      </span>
       {keeping ? (
-        <span className="flex h-6 items-center gap-1.5 rounded-[7px] border border-line2 bg-surface pr-1 pl-[9px] text-[11.5px] whitespace-nowrap text-ink2">
+        <span
+          title="Tia biết bạn đang xem hồ sơ này và tự tra thêm khi cần"
+          className="flex h-6 items-center gap-1.5 rounded-[7px] border border-line2 bg-surface pr-1 pl-[9px] text-[11.5px] whitespace-nowrap text-ink2"
+        >
+          <span className="flex-none text-muted">
+            {subject.kind === 'customer' ? 'Khách' : 'Cơ hội'}
+          </span>
           <span className="max-w-[220px] truncate">{subject.label}</span>
           <button
             type="button"
@@ -695,6 +734,7 @@ function Thread({
             mine={row.message.role === 'user'}
             text={row.text}
             files={row.files}
+            context={row.context}
             actions={row.actions}
             onDecide={onDecide}
             onPick={onPick}
@@ -744,6 +784,7 @@ type Row =
       message: ChatMessage
       text: string
       files: Attachment[]
+      context: ContextBlock | null
       /** Cards the person acts on — a proposed write, a question back. These
        *  stay where they were asked. */
       actions: ChatToolCall[]
@@ -788,7 +829,7 @@ function layout(messages: ChatMessage[], calls: ChatToolCall[]): Row[] {
     reads.push(...own.filter((call) => !isActionCall(call)))
 
     if (text !== '' || files.length > 0 || actions.length > 0) {
-      rows.push({ kind: 'turn', message, text, files, actions })
+      rows.push({ kind: 'turn', message, text, files, context: contextOf(message), actions })
     }
   }
   flush('src-end')
@@ -953,6 +994,7 @@ const Turn = memo(function Turn({
   mine,
   text,
   files,
+  context,
   actions,
   onDecide,
   onPick,
@@ -962,6 +1004,7 @@ const Turn = memo(function Turn({
   mine: boolean
   text: string
   files: Attachment[]
+  context: ContextBlock | null
   actions: ChatToolCall[]
   onDecide: (callId: string, approve: boolean) => void
   onPick: (text: string) => void
@@ -969,6 +1012,14 @@ const Turn = memo(function Turn({
 }) {
   return (
     <div className={cx('flex flex-col gap-[7px]', mine ? 'items-end' : 'items-start')}>
+      {/** Which record the question was asked about, so a thread read back
+        *  later still says what "khách này" meant. */}
+      {context ? (
+        <span className="max-w-[88%] truncate text-[10.5px] text-muted">
+          Về {context.kind === 'customer' ? 'khách' : 'cơ hội'} {context.label}
+        </span>
+      ) : null}
+
       {files.length > 0 && threadId ? (
         <div className={cx('flex max-w-[88%] flex-wrap gap-1.5', mine && 'justify-end')}>
           {files.map((file) => (
@@ -1010,6 +1061,7 @@ function Composer({
   onSubmit,
   busy,
   showQuick,
+  quick,
   canAttach,
   pending,
   onAttach,
@@ -1021,6 +1073,7 @@ function Composer({
   onSubmit: () => void
   busy: boolean
   showQuick: boolean
+  quick: string[]
   canAttach: boolean
   pending: Pending[]
   onAttach: (files: File[]) => void
@@ -1033,7 +1086,7 @@ function Composer({
     <div className="flex flex-none flex-col gap-2 border-t border-line bg-surface px-3 pt-[9px] pb-[11px]">
       {showQuick ? (
         <div className="flex flex-wrap gap-[7px]">
-          {QUICK.map((prompt) => (
+          {quick.map((prompt) => (
             <button
               key={prompt}
               type="button"

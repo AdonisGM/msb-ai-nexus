@@ -24,7 +24,7 @@ import { LANGFUSE_ENABLED } from './tracing'
 import { systemPrompt, TITLE_PROMPT } from './prompt'
 import { metaOf, requestTools, runApproved, type ToolSink } from './tools'
 import { AttachmentsService, refOf, type UploadedFile } from './attachments.service'
-import { filesToLoad, replay } from './replay'
+import { filesToLoad, replay, type ContextRef } from './replay'
 import type { SendMessageDto, StartConversationDto } from './dto'
 
 type Block = Anthropic.Beta.Messages.BetaContentBlockParam
@@ -197,13 +197,41 @@ export class ChatService {
      *  words. Nothing at all is not. */
     if (text === '' && files.length === 0) throw new BadRequestException('text_required')
 
-    await this.turn(user, conversation, { role: 'user', content: text }, emit, files)
+    const context = body.contextKind
+      ? await this.contextOf(user, body.contextKind, body.contextId!)
+      : null
+
+    await this.turn(user, conversation, { role: 'user', content: text }, emit, files, context)
 
     if (conversation.title === '') {
       await this.nameThread(user, conversation.id)
     }
 
     return this.get(user, id)
+  }
+
+  /** The record on screen, read through the person's own scope.
+   *
+   *  A record they cannot see is a 404 here exactly as it is on its own page,
+   *  so an id pasted from somewhere else cannot put another salesperson's
+   *  customer into the model's context — or confirm that it exists. The label
+   *  comes from the row, never from the browser. */
+  private async contextOf(
+    user: User,
+    kind: 'customer' | 'opportunity',
+    id: string,
+  ): Promise<ContextRef> {
+    if (kind === 'customer') {
+      const customer = await this.customers.get(user, id)
+      return { type: 'context', kind, id, label: `"${customer.name}" (${customer.code})` }
+    }
+    const deal = await this.opportunities.get(user, id)
+    return {
+      type: 'context',
+      kind,
+      id,
+      label: `${deal.code} của khách "${deal.customerName}"`,
+    }
   }
 
   /** Approves or declines a write the assistant proposed.
@@ -309,13 +337,14 @@ export class ChatService {
     said: Turn,
     emit?: Emit,
     files: Attachment[] = [],
+    context: ContextRef | null = null,
   ) {
     /** One trace per turn, with the person and the thread on it, so a run can
      *  be found later by who asked rather than by a request id nobody kept.
      *
      *  A no-op when Langfuse is not configured — `propagateAttributes` still
      *  runs the callback, and the spans inside simply go nowhere. */
-    if (!LANGFUSE_ENABLED) return this.runTurn(user, conversation, said, emit, files)
+    if (!LANGFUSE_ENABLED) return this.runTurn(user, conversation, said, emit, files, context)
 
     return propagateAttributes(
       {
@@ -335,7 +364,7 @@ export class ChatService {
          *  itemisation — you can see what a turn cost and never why. */
         startActiveObservation('chat', async (span) => {
           span.update({ input: textOfTurn(said) })
-          const answer = await this.runTurn(user, conversation, said, emit, files)
+          const answer = await this.runTurn(user, conversation, said, emit, files, context)
           span.update({ output: answer })
           return answer
         }),
@@ -348,14 +377,17 @@ export class ChatService {
     said: Turn,
     emit?: Emit,
     files: Attachment[] = [],
+    context: ContextRef | null = null,
   ) {
-    /** The turn as it is stored: files by reference, ahead of the words —
-     *  the order the API reads documents best in. The bytes are swapped in by
-     *  `replay`, for this request only. */
-    const stored: Turn = files.length
+    /** The turn as it is stored: the screen's context and the files by
+     *  reference, ahead of the words — the order the API reads documents best
+     *  in. The bytes and the context note are swapped in by `replay`, for this
+     *  request only. */
+    const stored: Turn = files.length || context
       ? {
           role: 'user',
           content: [
+            ...(context ? [context] : []),
             ...files.map(refOf),
             /** A file sent without words has an empty text block, which the
              *  API refuses outright. */

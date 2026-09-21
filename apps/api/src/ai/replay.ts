@@ -4,6 +4,30 @@ import type { AttachmentRef } from './attachments.service'
 type Block = Anthropic.Beta.Messages.BetaContentBlockParam
 type Turn = Anthropic.Beta.Messages.BetaMessageParam
 
+/** The record a person had open when they asked, as a stored turn keeps it.
+ *
+ *  Like a file, a reference rather than the record: the model is told what is
+ *  on screen and which tool reads it, and reads it itself if the question
+ *  needs it. Handing it the whole file up front would pay for a customer's
+ *  history on every turn of a thread that may be about something else — and
+ *  would be a snapshot, stale the moment somebody edits the record. */
+export type ContextRef = {
+  type: 'context'
+  kind: 'customer' | 'opportunity'
+  id: string
+  label: string
+}
+
+/** What the model reads in place of a context reference. */
+export function contextNote(ref: ContextRef): string {
+  /** The id is named as the argument to pass, word for word. Written as
+   *  "(id …)" after a label that already held the display code, the model
+   *  passed the code — `OPP-2026-0952` — and the lookup came back empty. */
+  return ref.kind === 'customer'
+    ? `[Ngữ cảnh: người dùng đang mở hồ sơ khách hàng ${ref.label}. "Khách này", "khách hàng này" là khách đó. Cần chi tiết thì gọi get_customer với customerId: "${ref.id}"; tín hiệu thì get_customer_signals với cùng customerId.]`
+    : `[Ngữ cảnh: người dùng đang mở cơ hội ${ref.label}. "Cơ hội này", "deal này" là cơ hội đó. Cần chi tiết thì gọi get_opportunity với opportunityId: "${ref.id}"; vết xử lý thì get_opportunity_history với cùng opportunityId.]`
+}
+
 /** A stored turn, as much of it as replay needs. */
 export type StoredTurn = { role: string; content: unknown }
 
@@ -52,7 +76,8 @@ export function replay(rows: StoredTurn[], files: Map<string, Block>): Turn[] {
     const role = row.role as 'user' | 'assistant'
     if (typeof row.content === 'string') return { role, content: row.content }
 
-    const content = (row.content as (Block | AttachmentRef)[]).map((block): Block => {
+    const content = (row.content as (Block | AttachmentRef | ContextRef)[]).map((block): Block => {
+      if (isContext(block)) return { type: 'text', text: contextNote(block) }
       if (isRef(block)) {
         const loaded = keep.has(index) ? files.get(block.id) : undefined
         return (
@@ -101,6 +126,14 @@ function markNewestFile(turns: Turn[]) {
       }
     }
   }
+}
+
+function isContext(block: unknown): block is ContextRef {
+  return (
+    typeof block === 'object' &&
+    block !== null &&
+    (block as { type?: unknown }).type === 'context'
+  )
 }
 
 export function refsIn(content: unknown): AttachmentRef[] {

@@ -16,6 +16,7 @@ import { t, tCode } from '~/i18n'
 import { daysSince, daysUntil, vnDate } from '~/lib/dates'
 import { fmtDuration, fmtMoney, fmtNum } from '~/lib/format'
 import { canEditRecords } from '~/lib/can'
+import { usePageSubject } from '~/lib/page-subject'
 
 /** Where the reader came from, so "back" lands where they expect.
  *
@@ -42,6 +43,14 @@ function OpportunityScreen() {
   const { user } = Route.useRouteContext()
   const navigate = useNavigate()
   const query = useQuery(opportunityQuery(id))
+
+  /** Offered to Tia while this lead is open — "cơ hội này" then means this
+   *  one. */
+  usePageSubject(
+    query.data
+      ? { kind: 'opportunity', id, label: `${query.data.code} · ${query.data.customerName}` }
+      : null,
+  )
   const [editing, setEditing] = useState(false)
 
   /** The funnel buttons come from the server on the lead itself, so a reader

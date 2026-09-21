@@ -249,6 +249,52 @@ function ownerResolver(users: UsersService, user: User) {
   }
 }
 
+/** Turns what the model called a customer or a lead into the id the services
+ *  want.
+ *
+ *  The same trap as naming a colleague, with a record instead. Every screen,
+ *  every search row and the page-context note show `OPP-2026-0952` and
+ *  `CUS-RB-175`; the services want the id behind them. The model passes the
+ *  code often enough to matter — first seen with a branch manager asking about
+ *  the lead open on their screen, told "not found" about a record they were
+ *  looking at.
+ *
+ *  A code is looked up through the same scoped list the search tool uses, so
+ *  a code for somebody else's lead resolves to nothing, exactly as its id
+ *  would. Anything that is not code-shaped passes through untouched and the
+ *  service decides, as before. */
+export function recordResolver(services: Pick<Services, 'customers' | 'opportunities'>, user: User) {
+  const isCode = (value: string, prefix: 'CUS' | 'OPP') =>
+    new RegExp(`^${prefix}-[A-Z0-9-]+$`, 'i').test(value.trim())
+
+  async function find(
+    kind: 'customer' | 'opportunity',
+    code: string,
+  ): Promise<string> {
+    const want = code.trim().toUpperCase()
+    const page =
+      kind === 'customer'
+        ? await services.customers.list(user, { q: want, page: 1, pageSize: 5 })
+        : await services.opportunities.list(user, { q: want, page: 1, pageSize: 5 })
+
+    const row = page.rows.find((candidate) => candidate.code.toUpperCase() === want)
+    if (row) return row.id
+
+    throw new Error(
+      kind === 'customer'
+        ? `Không có khách hàng mã "${code}" trong phạm vi người dùng được xem.`
+        : `Không có cơ hội mã "${code}" trong phạm vi người dùng được xem.`,
+    )
+  }
+
+  return {
+    customer: async <T extends string | undefined>(value: T): Promise<T> =>
+      (value && isCode(value, 'CUS') ? await find('customer', value) : value) as T,
+    opportunity: async <T extends string | undefined>(value: T): Promise<T> =>
+      (value && isCode(value, 'OPP') ? await find('opportunity', value) : value) as T,
+  }
+}
+
 /** How many rows a tool may hand back.
  *
  *  Small, because every row goes into the next request and is paid for again
@@ -297,6 +343,7 @@ function trimPage<T, R>(
 export function buildTools(services: Services, user: User, sink: ToolSink = () => {}) {
   const { customers, opportunities, signals, reports, users, targets } = services
   const ownerIdOf = ownerResolver(users, user)
+  const idOf = recordResolver(services, user)
 
   /** One wrapper for every tool below.
    *
@@ -558,7 +605,7 @@ ${
         'Hồ sơ đầy đủ một khách hàng: thuộc tính, sản phẩm đang dùng, người phụ trách, ' +
         'tình trạng cơ hội.',
       inputSchema: z.object({ customerId: z.string() }),
-      run: async (input) => customers.get(user, input.customerId),
+      run: async (input) => customers.get(user, await idOf.customer(input.customerId)),
     }),
 
     read({
@@ -571,7 +618,11 @@ ${
         type: z.string().optional().describe('Lọc theo loại tín hiệu, xem list_codes'),
       }),
       run: async (input) =>
-        signals.list(user, input.customerId, input.type ? { type: input.type } : {}),
+        signals.list(
+          user,
+          await idOf.customer(input.customerId),
+          input.type ? { type: input.type } : {},
+        ),
     }),
 
     read({
@@ -609,6 +660,7 @@ ${
       run: async (input) => {
         const page = await opportunities.list(user, {
           ...input,
+          customerId: await idOf.customer(input.customerId),
           ownerId: await ownerIdOf(input.ownerId),
           pageSize: input.pageSize ?? PAGE.default,
         })
@@ -634,7 +686,7 @@ ${
       name: 'get_opportunity',
       description: 'Chi tiết một cơ hội, gồm sản phẩm đã bán nếu đã chốt.',
       inputSchema: z.object({ opportunityId: z.string() }),
-      run: async (input) => opportunities.get(user, input.opportunityId),
+      run: async (input) => opportunities.get(user, await idOf.opportunity(input.opportunityId)),
     }),
 
     read({
@@ -643,7 +695,8 @@ ${
         'Vết xử lý của một cơ hội: từng bước, ai làm, lúc nào, và chờ bao lâu kể từ bước ' +
         'trước. Dùng khi cần biết vì sao một cơ hội chậm.',
       inputSchema: z.object({ opportunityId: z.string() }),
-      run: async (input) => opportunities.history(user, input.opportunityId),
+      run: async (input) =>
+        opportunities.history(user, await idOf.opportunity(input.opportunityId)),
     }),
 
     /* ── Số liệu ──────────────────────────────────────────────────────── */
@@ -879,6 +932,20 @@ export async function runApproved(
    *  a row in `tool_calls` — a role that changed in between, or a call raised
    *  before this guard existed, would otherwise write. */
   if (!mayWrite(user)) throw new ForbiddenException('role_may_not_write')
+
+  /** The card shows what the model wrote — often a code, which is what the
+   *  person recognises. It becomes an id here, at the moment of the write,
+   *  through the person's own scope. */
+  const idOf = recordResolver(services, user)
+  input = {
+    ...input,
+    ...(typeof input.customerId === 'string'
+      ? { customerId: await idOf.customer(input.customerId) }
+      : {}),
+    ...(typeof input.opportunityId === 'string'
+      ? { opportunityId: await idOf.opportunity(input.opportunityId) }
+      : {}),
+  }
 
   switch (name) {
     case 'record_signal':

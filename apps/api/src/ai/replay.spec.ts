@@ -1,7 +1,15 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
 import type { AttachmentRef } from './attachments.service'
-import { FILE_TURNS, filesToLoad, REPLAY_TURNS, replay, type StoredTurn } from './replay'
+import {
+  contextNote,
+  FILE_TURNS,
+  filesToLoad,
+  REPLAY_TURNS,
+  replay,
+  type ContextRef,
+  type StoredTurn,
+} from './replay'
 
 type Block = Anthropic.Beta.Messages.BetaContentBlockParam
 
@@ -170,5 +178,50 @@ describe('replaying tool results', () => {
   it('leaves a string turn as a string', () => {
     const turns = replay([{ role: 'user', content: 'Tôi đã duyệt' }], new Map())
     expect(turns[0]).toEqual({ role: 'user', content: 'Tôi đã duyệt' })
+  })
+})
+
+describe('replaying what was on screen', () => {
+  const customer: ContextRef = {
+    type: 'context',
+    kind: 'customer',
+    id: 'cus_1',
+    label: '"Công ty Đại Dương" (KH0001)',
+  }
+  const deal: ContextRef = { type: 'context', kind: 'opportunity', id: 'opp_1', label: 'CH0001' }
+
+  /** The API has never heard of a `context` block and would refuse the whole
+   *  request over one. */
+  it('turns the reference into a line the model reads', () => {
+    const turns = replay([said(customer, { type: 'text', text: 'khách này cần gì?' })], new Map())
+    const content = turns[0].content as Block[]
+
+    expect(content[0]).toEqual({ type: 'text', text: contextNote(customer) })
+    expect(content[1]).toEqual({ type: 'text', text: 'khách này cần gì?' })
+  })
+
+  it('names the record and the tool that reads it', () => {
+    expect(contextNote(customer)).toContain('cus_1')
+    expect(contextNote(customer)).toContain('get_customer')
+    expect(contextNote(deal)).toContain('opp_1')
+    expect(contextNote(deal)).toContain('get_opportunity')
+  })
+
+  /** Unlike a file it is a line of text, so it costs nothing to keep — and
+   *  "khách này" three turns later still has to mean the same customer. */
+  it('keeps the note in old turns, where files are dropped', () => {
+    const rows = [
+      said(customer, { type: 'text', text: '1' }),
+      answered('...'),
+      said({ type: 'text', text: '2' }),
+      answered('...'),
+      said({ type: 'text', text: '3' }),
+    ]
+    const first = replay(rows, new Map())[0].content as Block[]
+    expect(first[0]).toMatchObject({ type: 'text', text: expect.stringContaining('cus_1') })
+  })
+
+  it('does not count a context note as a file to load', () => {
+    expect(filesToLoad([said(customer, { type: 'text', text: 'x' })])).toEqual([])
   })
 })

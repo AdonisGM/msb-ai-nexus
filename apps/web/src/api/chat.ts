@@ -36,9 +36,19 @@ export type Attachment = {
   size: number
 }
 
+/** The record that was on screen when a question was asked. `label` is the
+ *  server's, read from the row — not what the browser sent. */
+export type ContextBlock = {
+  type: 'context'
+  kind: 'customer' | 'opportunity'
+  id: string
+  label: string
+}
+
 export type Block =
   | { type: 'text'; text: string }
   | Attachment
+  | ContextBlock
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; tool_use_id: string; content?: unknown }
   | { type: 'thinking'; thinking?: string }
@@ -202,6 +212,12 @@ export async function attachmentUrl(threadId: string, id: string): Promise<strin
   })
   if (!res.ok) throw new ApiError(res.status, 'attachment_not_found')
   return URL.createObjectURL(await res.blob())
+}
+
+export function contextOf(message: ChatMessage): ContextBlock | null {
+  return (
+    message.content.find((block): block is ContextBlock => block.type === 'context') ?? null
+  )
 }
 
 export function filesOf(message: ChatMessage): Attachment[] {

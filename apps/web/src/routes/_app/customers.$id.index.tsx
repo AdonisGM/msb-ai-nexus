@@ -14,6 +14,7 @@ import { ATTRIBUTE_LABELS, SEGMENT_TONE } from '~/lib/customer'
 import { daysSince, vnDate } from '~/lib/dates'
 import { fmtNum } from '~/lib/format'
 import { canEditRecords } from '~/lib/can'
+import { usePageSubject } from '~/lib/page-subject'
 
 export const Route = createFileRoute('/_app/customers/$id/')({ component: CustomerScreen })
 
@@ -29,6 +30,12 @@ function CustomerScreen() {
   const { user } = Route.useRouteContext()
   const navigate = useNavigate()
   const query = useQuery(customerQuery(id))
+
+  /** Offered to Tia while this file is open, so "khách này" in a question
+   *  means this customer without anybody typing the name. */
+  usePageSubject(
+    query.data ? { kind: 'customer', id, label: query.data.name } : null,
+  )
 
   /** A branch manager reads this file and never writes to it, so every control
    *  that would post is absent rather than present and refused. */

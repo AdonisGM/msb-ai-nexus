@@ -557,3 +557,51 @@ describe('what the assistant is told after a search', () => {
     expect(decisionText('record_signal', true, false, {})).toContain('đã ghi xong')
   })
 })
+
+/** The record on screen is sent as a reference and read back through the
+ *  person's own scope, so it can never carry someone else's customer into the
+ *  model's context. Checked before the model is reached. */
+describe('the record on screen', () => {
+  it('refuses a customer the person cannot see', async () => {
+    const b = await makeBranch()
+    const theirs = await makeCustomer({ ownerId: b.saleSse.id, segment: 'sse' })
+    const thread = await makeConversation({ ownerId: b.saleRb.id })
+
+    await expect(
+      service.send(b.saleRb, thread.id, {
+        text: 'khách này thế nào?',
+        contextKind: 'customer',
+        contextId: theirs.id,
+      }),
+    ).rejects.toBeInstanceOf(NotFoundException)
+  })
+
+  it('refuses an opportunity that does not exist', async () => {
+    const b = await makeBranch()
+    const thread = await makeConversation({ ownerId: b.saleRb.id })
+
+    await expect(
+      service.send(b.saleRb, thread.id, {
+        text: 'cơ hội này?',
+        contextKind: 'opportunity',
+        contextId: 'opp_nope',
+      }),
+    ).rejects.toBeInstanceOf(NotFoundException)
+  })
+
+  /** Past the scope check, the turn goes on to the model — which these tests
+   *  cut out, so reaching it is the proof the context was accepted. */
+  it('accepts the person’s own customer', async () => {
+    const b = await makeBranch()
+    const mine = await makeCustomer({ ownerId: b.saleRb.id, segment: 'rb' })
+    const thread = await makeConversation({ ownerId: b.saleRb.id })
+
+    await expect(
+      service.send(b.saleRb, thread.id, {
+        text: 'khách này thế nào?',
+        contextKind: 'customer',
+        contextId: mine.id,
+      }),
+    ).rejects.toThrow(/ai_not_configured/)
+  })
+})

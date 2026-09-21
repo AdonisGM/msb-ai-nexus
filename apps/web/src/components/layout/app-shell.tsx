@@ -10,6 +10,7 @@ import { initials } from '~/lib/format'
 import { BrandLockup } from './msb-logo'
 import { Spark } from '~/components/chat/spark'
 import { TiaBubble } from '~/components/chat/tia-bubble'
+import { PageSubjectProvider, useCurrentSubject } from '~/lib/page-subject'
 
 /** Loaded the first time somebody opens it, not on every page view.
  *
@@ -50,49 +51,51 @@ export function AppShell({ user, children }: { user: Me; children: ReactNode }) 
   const items = navFor(user.role)
 
   return (
-    <div className="relative flex min-h-screen flex-col bg-bg text-ink">
-      {/** The same faint noise as the login screen. Without it the two read as
-        *  different products the moment someone signs in. */}
-      <div
-        className="grain pointer-events-none fixed inset-0 z-0"
-        style={{ opacity: 'var(--grain)' }}
-      />
+    <PageSubjectProvider>
+      <div className="relative flex min-h-screen flex-col bg-bg text-ink">
+        {/** The same faint noise as the login screen. Without it the two read as
+          *  different products the moment someone signs in. */}
+        <div
+          className="grain pointer-events-none fixed inset-0 z-0"
+          style={{ opacity: 'var(--grain)' }}
+        />
 
-      <TopBar
-        user={user}
-        menuOpen={menuOpen}
-        onToggleMenu={() => setMenuOpen((open) => !open)}
-      />
+        <TopBar
+          user={user}
+          menuOpen={menuOpen}
+          onToggleMenu={() => setMenuOpen((open) => !open)}
+        />
 
-      <div className="relative z-[1] flex min-h-0 flex-1">
-        <aside className="hidden w-[232px] flex-none border-r border-line bg-surface lg:block">
-          <div
-            className="sticky flex flex-col"
-            style={{ top: HEADER_H, height: `calc(100vh - ${HEADER_H}px)` }}
-          >
-            <Nav items={items} onNavigate={() => setMenuOpen(false)} />
-            <Footprint />
-          </div>
-        </aside>
+        <div className="relative z-[1] flex min-h-0 flex-1">
+          <aside className="hidden w-[232px] flex-none border-r border-line bg-surface lg:block">
+            <div
+              className="sticky flex flex-col"
+              style={{ top: HEADER_H, height: `calc(100vh - ${HEADER_H}px)` }}
+            >
+              <Nav items={items} onNavigate={() => setMenuOpen(false)} />
+              <Footprint />
+            </div>
+          </aside>
 
-        {/** Under lg the same menu drops out of the bar instead. One list in
-          *  two placements, rather than two components to keep in step. */}
-        {menuOpen ? (
-          <div
-            className="fixed inset-x-0 bottom-0 z-30 overflow-y-auto border-b border-line bg-surface lg:hidden"
-            style={{ top: HEADER_H }}
-          >
-            <Nav items={items} onNavigate={() => setMenuOpen(false)} />
-          </div>
-        ) : null}
+          {/** Under lg the same menu drops out of the bar instead. One list in
+            *  two placements, rather than two components to keep in step. */}
+          {menuOpen ? (
+            <div
+              className="fixed inset-x-0 bottom-0 z-30 overflow-y-auto border-b border-line bg-surface lg:hidden"
+              style={{ top: HEADER_H }}
+            >
+              <Nav items={items} onNavigate={() => setMenuOpen(false)} />
+            </div>
+          ) : null}
 
-        <main className="min-w-0 flex-1 px-4 pt-5 pb-14 sm:px-6 lg:px-8 lg:pt-7">
-          <div className="mx-auto flex flex-col gap-5" style={{ maxWidth: CONTENT_MAX }}>
-            {children}
-          </div>
-        </main>
+          <main className="min-w-0 flex-1 px-4 pt-5 pb-14 sm:px-6 lg:px-8 lg:pt-7">
+            <div className="mx-auto flex flex-col gap-5" style={{ maxWidth: CONTENT_MAX }}>
+              {children}
+            </div>
+          </main>
+        </div>
       </div>
-    </div>
+    </PageSubjectProvider>
   )
 }
 
@@ -304,6 +307,7 @@ function AskTia() {
   const [open, setOpen] = useState(false)
   const [prefill, setPrefill] = useState('')
   const status = useQuery(chatStatusQuery())
+  const subject = useCurrentSubject()
 
   /** Cmd/Ctrl + K, because that is where people reach for it. */
   useEffect(() => {
@@ -360,6 +364,7 @@ function AskTia() {
               setPrefill('')
             }}
             prefill={prefill}
+            subject={subject ?? undefined}
           />
         </Suspense>
       ) : null}
