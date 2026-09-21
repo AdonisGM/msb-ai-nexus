@@ -129,6 +129,10 @@ export class ChatService {
         role: turn.role,
         content: turn.content,
         createdAt: turn.createdAt,
+        /** Written by `decide`, not typed. The approval card already says what
+         *  was decided; drawn as a bubble it would repeat that, with the raw
+         *  result JSON attached, in the person's own voice. */
+        automatic: turn.role === 'user' && isDecisionTurn(turn.content),
       })),
       toolCalls: calls.map((call) => ({
         id: call.id,
@@ -287,11 +291,7 @@ export class ChatService {
      *  tool_result, because that is what it is: the person came back and said
      *  something. A denial has to reach the model too, or it proposes the same
      *  write again on the next question. */
-    const said = approve
-      ? failed
-        ? `Tôi đã duyệt "${call.name}" nhưng hệ thống từ chối: ${JSON.stringify(result)}. Đừng thử lại cùng cách.`
-        : `Tôi đã duyệt "${call.name}". Hệ thống đã ghi xong: ${JSON.stringify(result)}`
-      : `Tôi không duyệt "${call.name}".${note ? ` Lý do: ${note}` : ''} Đừng đề xuất lại việc này trừ khi tôi yêu cầu.`
+    const said = decisionText(call.name, approve, failed, result, note)
 
     await this.turn(user, conversation, { role: 'user', content: said }, emit)
 
@@ -615,6 +615,42 @@ export class ChatService {
     if (!row) throw new NotFoundException('conversation_not_found')
     return row
   }
+}
+
+/** What the assistant is told after a person decides a proposed write.
+ *
+ *  Kept beside `isDecisionTurn` so the two cannot drift: the screen hides
+ *  these turns by recognising the words, and a reworded template that the
+ *  matcher missed would put raw JSON back in a bubble. */
+export function decisionText(
+  name: string,
+  approve: boolean,
+  failed: boolean,
+  result: unknown,
+  note?: string,
+): string {
+  if (!approve) {
+    return `${DECLINED} "${name}".${note ? ` Lý do: ${note}` : ''} Đừng đề xuất lại việc này trừ khi tôi yêu cầu.`
+  }
+  if (failed) {
+    return `${APPROVED} "${name}" nhưng hệ thống từ chối: ${JSON.stringify(result)}. Đừng thử lại cùng cách.`
+  }
+  /** A search wrote nothing, and its result is somebody else's page. Said
+   *  so, because "đã ghi xong" would have the model treat a news article as
+   *  a record in the system. */
+  if (name === 'search_web') {
+    return `${APPROVED} "${name}". Kết quả tìm trên mạng — nguồn bên ngoài, chưa kiểm chứng, không phải số liệu của ngân hàng. Trả lời dựa trên kết quả này và nêu nguồn: ${JSON.stringify(result)}`
+  }
+  return `${APPROVED} "${name}". Hệ thống đã ghi xong: ${JSON.stringify(result)}`
+}
+
+const APPROVED = 'Tôi đã duyệt'
+const DECLINED = 'Tôi không duyệt'
+
+export function isDecisionTurn(content: unknown): boolean {
+  const blocks = normalise(content as Turn['content'])
+  if (blocks.length !== 1 || blocks[0].type !== 'text') return false
+  return new RegExp(`^(${APPROVED}|${DECLINED}) "[a-z_]+"`).test(blocks[0].text)
 }
 
 /** A turn's content is either a string the caller typed or a list of blocks.

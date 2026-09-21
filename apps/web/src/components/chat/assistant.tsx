@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FileText, Paperclip, Trash2, X } from 'lucide-react'
+import { ChevronRight, FileText, Paperclip, Trash2, X } from 'lucide-react'
 import {
   ATTACH_ACCEPT,
   ATTACH_MAX_PER_MESSAGE,
   attachLimitFor,
   attachmentUrl,
+  shrinkImage,
   chatStatusQuery,
   conversationsQuery,
   deleteConversation,
@@ -26,7 +27,7 @@ import { tError } from '~/i18n'
 import { useWriteError } from '~/lib/use-write-error'
 import { Markdown } from './markdown'
 import { Spark } from './spark'
-import { ToolCard } from './tool-card'
+import { hasReadCard, isActionCall, ToolCard } from './tool-card'
 
 /** The assistant, as a floating panel.
  *
@@ -134,19 +135,54 @@ export function Assistant({
    *  takes its place rather than appearing beside it. */
   const [echo, setEcho] = useState<{ text: string; files: Pending[] } | null>(null)
 
+  /** Text that has arrived but not been drawn yet.
+   *
+   *  Deltas come a few characters at a time, often several per frame. Setting
+   *  state on each one re-rendered the panel more often than the screen could
+   *  show it; gathering them and drawing once per animation frame looks the
+   *  same and does a fraction of the work. */
+  const unsent = useRef('')
+  const frame = useRef<number | null>(null)
+
+  const drawText = () => {
+    frame.current = null
+    const text = unsent.current
+    if (!text) return
+    unsent.current = ''
+    setLive((was) => ({ tools: was?.tools ?? [], text: (was?.text ?? '') + text }))
+  }
+
   /** Resolves to whether the turn went through, so a failed send can hand its
-   *  files back to the composer — they are still unsent on the server. */
-  const run = async (path: string, body: unknown, said?: { text: string; files: Pending[] }) => {
+   *  files back to the composer — they are still unsent on the server.
+   *
+   *  `wrote` is for an approval: that is the one path where the branch's data
+   *  changes, so the screens behind the popup need refetching. Anything else
+   *  only changes this thread, and refetching every query in the app after
+   *  each answer was a visible hitch of its own. */
+  const run = async (
+    path: string,
+    body: unknown,
+    said?: { text: string; files: Pending[] },
+    wrote = false,
+  ) => {
     setFailed('')
     setEcho(said ?? null)
     setLive({ text: '', tools: [] })
+    unsent.current = ''
     let ok = true
+
+    /** Set after a tool runs, so the next words start a new paragraph rather
+     *  than running on from "để tôi xem" into the answer. */
+    let broke = false
 
     try {
       await streamTurn(path, body, (event) => {
         if (event.kind === 'text') {
-          setLive((was) => ({ ...(was ?? { tools: [] }), text: (was?.text ?? '') + event.delta }))
+          unsent.current += (broke ? '\n\n' : '') + event.delta
+          broke = false
+          frame.current ??= requestAnimationFrame(drawText)
         } else if (event.kind === 'tool') {
+          broke = true
           setLive((was) => ({
             text: was?.text ?? '',
             /** Named once however many times it is called: three searches in a
@@ -162,18 +198,42 @@ export function Assistant({
       ok = false
       setFailed(error instanceof Error ? error.message : 'unexpected_error')
     } finally {
+      if (frame.current !== null) cancelAnimationFrame(frame.current)
+      drawText()
+
       /** The stored turn replaces the preview — it has the ids, the tool
        *  results and anything waiting for approval. Cleared only after the
        *  refetch lands, or the thread blinks empty in between. */
-      await queryClient.invalidateQueries({ queryKey: ['chat'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['chat', 'thread'] }),
+        queryClient.invalidateQueries({ queryKey: ['chat', 'list'] }),
+      ])
       setLive(null)
       setEcho(null)
-      /** An approved write changed the branch's data, so every screen behind
-       *  the popup is now stale too. */
-      void queryClient.invalidateQueries()
+      if (wrote) void queryClient.invalidateQueries()
     }
     return ok
   }
+
+  /** Stable across renders, so the memoised turns below do not all redraw
+   *  because a new arrow function was passed down on each frame of text. */
+  const latest = useRef({ run, threadId })
+  latest.current = { run, threadId }
+
+  const decide = useCallback((callId: string, approve: boolean) => {
+    const { run, threadId } = latest.current
+    void run(
+      `/chat/${threadId}/tool-calls/${callId}/${approve ? 'approve' : 'deny'}/stream`,
+      {},
+      undefined,
+      approve,
+    )
+  }, [])
+
+  const pick = useCallback((text: string) => {
+    const { run, threadId } = latest.current
+    void run(`/chat/${threadId}/messages/stream`, { text }, { text, files: [] })
+  }, [])
 
   const sending = live !== null
 
@@ -204,7 +264,8 @@ export function Assistant({
       setThreadId(id)
 
       await Promise.all(
-        picked.slice(0, room).map(async (file) => {
+        picked.slice(0, room).map(async (original) => {
+          const file = await shrinkImage(original)
           const key = `${file.name}-${file.size}-${Math.random()}`
           const kind: Attachment['kind'] = file.type.startsWith('image/')
             ? 'image'
@@ -380,15 +441,8 @@ export function Assistant({
               echo={showEcho ? echo : null}
               live={live}
               failed={failed}
-              onDecide={(callId, approve) =>
-                void run(
-                  `/chat/${threadId}/tool-calls/${callId}/${approve ? 'approve' : 'deny'}/stream`,
-                  {},
-                )
-              }
-              onPick={(text) =>
-                void run(`/chat/${threadId}/messages/stream`, { text }, { text, files: [] })
-              }
+              onDecide={decide}
+              onPick={pick}
               deciding={sending}
             />
 
@@ -589,29 +643,38 @@ function Thread({
   onPick: (text: string) => void
   deciding: boolean
 }) {
-  const bottom = useRef<HTMLDivElement>(null)
+  const scroller = useRef<HTMLDivElement>(null)
 
-  /** A turn is worth a row if it says something or shows something. The rest
-   *  is transcript: the `user` turns the runner writes to carry tool results
-   *  back to the model have neither, and belong to the record rather than to
-   *  the reader. */
-  const shown = messages
-    .map((message) => ({
-      message,
-      text: textOf(message),
-      files: filesOf(message),
-      calls: calls.filter((call) => call.messageId === message.id),
-    }))
-    .filter((row) => row.text !== '' || row.files.length > 0 || row.calls.length > 0)
+  /** Whether to follow new text down. True until the person scrolls up to
+   *  reread something, and back to true once they return to the bottom —
+   *  dragging them down mid-sentence on every token is the other half of what
+   *  made the panel feel like it was fighting them. */
+  const stick = useRef(true)
 
-  /** Follows the text down as it is written, not just when a turn ends. */
+  /** Recomputed when the stored thread changes, not on every frame of a
+   *  streaming reply — the reply is `live`, which this does not read. */
+  const rows = useMemo(() => layout(messages, calls), [messages, calls])
+
+  /** A new question always brings the view down, wherever it was. */
   useEffect(() => {
-    bottom.current?.scrollIntoView({ block: 'end' })
-  }, [shown.length, calls.length, echo, live?.text, live?.tools.length])
+    if (echo) stick.current = true
+  }, [echo])
+
+  useLayoutEffect(() => {
+    const el = scroller.current
+    if (el && stick.current) el.scrollTop = el.scrollHeight
+  }, [rows, echo, live?.text, live?.tools.length, failed])
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto px-3 py-3.5">
-      {shown.length === 0 && !live && !echo ? (
+    <div
+      ref={scroller}
+      onScroll={(event) => {
+        const el = event.currentTarget
+        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+      }}
+      className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto px-3 py-3.5"
+    >
+      {rows.length === 0 && !live && !echo ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
           <Spark size={34} />
           <span className="mt-1 text-[13px] font-medium">Hỏi Tia</span>
@@ -622,19 +685,23 @@ function Thread({
         </div>
       ) : null}
 
-      {shown.map((row) => (
-        <Turn
-          key={row.message.id}
-          threadId={threadId}
-          message={row.message}
-          text={row.text}
-          files={row.files}
-          calls={row.calls}
-          onDecide={onDecide}
-          onPick={onPick}
-          deciding={deciding}
-        />
-      ))}
+      {rows.map((row) =>
+        row.kind === 'sources' ? (
+          <Sources key={row.key} calls={row.calls} onDecide={onDecide} onPick={onPick} />
+        ) : (
+          <Turn
+            key={row.message.id}
+            threadId={threadId}
+            mine={row.message.role === 'user'}
+            text={row.text}
+            files={row.files}
+            actions={row.actions}
+            onDecide={onDecide}
+            onPick={onPick}
+            deciding={deciding}
+          />
+        ),
+      )}
 
       {echo ? (
         <div className="flex flex-col items-end gap-[7px]">
@@ -667,11 +734,141 @@ function Thread({
           {tError(failed)}
         </div>
       ) : null}
-
-      <div ref={bottom} />
     </div>
   )
 }
+
+type Row =
+  | {
+      kind: 'turn'
+      message: ChatMessage
+      text: string
+      files: Attachment[]
+      /** Cards the person acts on — a proposed write, a question back. These
+       *  stay where they were asked. */
+      actions: ChatToolCall[]
+    }
+  | { kind: 'sources'; key: string; calls: ChatToolCall[] }
+
+/** The thread as rows to draw.
+ *
+ *  Reads are gathered per exchange — everything between one thing the person
+ *  said and the next — and drawn once, folded, under the answer. Left where
+ *  they happened they were a card per call: one question about the team made
+ *  thirteen identical "Kết quả theo tháng" cards above an answer that already
+ *  had the table. The figures are still one click away, which is what the
+ *  cards were for: showing that a number came from a query, not from the model.
+ *
+ *  Turns with nothing to show are dropped: the runner's tool-result carriers,
+ *  and the turns `decide` writes for the model, which the approval card
+ *  already says in the person's place. */
+function layout(messages: ChatMessage[], calls: ChatToolCall[]): Row[] {
+  const byMessage = new Map<string, ChatToolCall[]>()
+  for (const call of calls) {
+    const list = byMessage.get(call.messageId)
+    if (list) list.push(call)
+    else byMessage.set(call.messageId, [call])
+  }
+
+  const rows: Row[] = []
+  let reads: ChatToolCall[] = []
+  const flush = (key: string) => {
+    if (reads.length > 0) rows.push({ kind: 'sources', key, calls: reads })
+    reads = []
+  }
+
+  for (const message of messages) {
+    const text = textOf(message)
+    const files = filesOf(message)
+    if (message.role === 'user' && (text !== '' || files.length > 0)) flush(`src-${message.id}`)
+    if (message.automatic) continue
+
+    const own = byMessage.get(message.id) ?? []
+    const actions = own.filter(isActionCall)
+    reads.push(...own.filter((call) => !isActionCall(call)))
+
+    if (text !== '' || files.length > 0 || actions.length > 0) {
+      rows.push({ kind: 'turn', message, text, files, actions })
+    }
+  }
+  flush('src-end')
+
+  return rows
+}
+
+/** What the assistant looked at to answer, folded into one line.
+ *
+ *  Plumbing is left out of the line — who the person is, today's date, the
+ *  code lists, the tool search. Nobody asked about those, and naming them made
+ *  every answer look like it had consulted six sources when it had consulted
+ *  one. If nothing is left after that, there is no line at all. */
+const Sources = memo(function Sources({
+  calls,
+  onDecide,
+  onPick,
+}: {
+  calls: ChatToolCall[]
+  onDecide: (callId: string, approve: boolean) => void
+  onPick: (text: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+
+  const counts = new Map<string, number>()
+  for (const call of calls) {
+    if (QUIET_TOOLS.has(call.name)) continue
+    const word = TOOL_WORDS[call.name] ?? call.name
+    counts.set(word, (counts.get(word) ?? 0) + 1)
+  }
+  if (counts.size === 0) return null
+
+  const cards = calls.filter(hasReadCard)
+  const summary = [...counts].map(([word, n]) => (n > 1 ? `${word} ×${n}` : word)).join(' · ')
+  const shown = cards.slice(0, MAX_SOURCE_CARDS)
+
+  return (
+    <div className="flex flex-col items-start gap-[7px]">
+      <button
+        type="button"
+        disabled={cards.length === 0}
+        onClick={() => setOpen((was) => !was)}
+        aria-expanded={open}
+        className="flex max-w-full items-center gap-1 text-left text-[11px] text-muted enabled:cursor-pointer enabled:hover:text-ink2"
+      >
+        {cards.length > 0 ? (
+          <ChevronRight
+            size={12}
+            className={cx('flex-none transition-transform', open && 'rotate-90')}
+          />
+        ) : null}
+        <span className="truncate">Đã tra: {summary}</span>
+      </button>
+
+      {open ? (
+        <>
+          {shown.map((call) => (
+            <ToolCard key={call.id} call={call} onDecide={onDecide} onPick={onPick} deciding={false} />
+          ))}
+          {cards.length > shown.length ? (
+            <span className="text-[11px] text-muted">
+              và {cards.length - shown.length} bảng số liệu khác
+            </span>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  )
+})
+
+const MAX_SOURCE_CARDS = 4
+
+/** Reads that happen on nearly every turn and are never the answer. */
+const QUIET_TOOLS = new Set([
+  'whoami',
+  'today',
+  'list_codes',
+  'tool_search_tool_bm25',
+  'tool_search_tool_regex',
+])
 
 /** The turn in flight.
  *
@@ -680,12 +877,14 @@ function Thread({
  *  What makes the wait bearable is not a spinner but knowing which of the
  *  three it is in. */
 function Live({ live }: { live: { text: string; tools: string[] } }) {
+  const reading = live.tools.filter((name) => !QUIET_TOOLS.has(name))
+
   return (
     <div className="flex flex-col items-start gap-[7px]">
-      {live.tools.length > 0 ? (
+      {reading.length > 0 && !live.text ? (
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] text-muted">Đang đọc</span>
-          {live.tools.map((name) => (
+          {reading.map((name) => (
             <span
               key={name}
               className="flex h-[21px] items-center rounded-full border border-line bg-sunken px-2 text-[10.5px] text-ink2"
@@ -698,10 +897,13 @@ function Live({ live }: { live: { text: string; tools: string[] } }) {
 
       {live.text ? (
         <div className="max-w-[88%] rounded-[12px_12px_12px_4px] border border-line bg-raised px-3 py-[9px] text-[13px] leading-[1.55] text-ink">
-          <Markdown text={live.text} />
-          {/** A caret at the end of what has arrived, so a pause between
-            *  tokens reads as writing rather than as finished. */}
-          <span className="tia-caret ml-0.5 inline-block h-[13px] w-[2px] translate-y-[2px] bg-ink" />
+          {/** The caret is drawn by CSS at the end of the last line of text
+            *  (see `.tia-streaming` in app.css). As a span after the
+            *  Markdown it landed below the closing paragraph, so the first
+            *  two characters of every answer arrived as a two-line bubble. */}
+          <div className="tia-streaming">
+            <Markdown text={live.text} />
+          </div>
         </div>
       ) : (
         <div className="flex items-center gap-2 rounded-[12px_12px_12px_4px] border border-line bg-raised px-3 py-2.5">
@@ -734,34 +936,37 @@ const TOOL_WORDS: Record<string, string> = {
   get_breakdown: 'cơ cấu',
   get_by_owner: 'theo nhân viên',
   get_by_team: 'theo nhóm',
+  get_attention: 'cơ hội cần can thiệp',
+  get_forecast: 'dự báo',
   tool_search_tool_bm25: 'tìm công cụ',
   record_signal: 'soạn tín hiệu',
   draft_opportunity: 'soạn cơ hội',
   set_next_action: 'soạn việc tiếp theo',
   update_lead_fields: 'soạn chỉnh sửa',
+  search_web: 'đề xuất tìm trên mạng',
 }
 
-function Turn({
+/** One turn. Memoised: while a reply streams, the thread re-renders every
+ *  frame, and every turn already in it is the same as a frame ago. */
+const Turn = memo(function Turn({
   threadId,
-  message,
+  mine,
   text,
   files,
-  calls,
+  actions,
   onDecide,
   onPick,
   deciding,
 }: {
   threadId: string | null
-  message: ChatMessage
+  mine: boolean
   text: string
   files: Attachment[]
-  calls: ChatToolCall[]
+  actions: ChatToolCall[]
   onDecide: (callId: string, approve: boolean) => void
   onPick: (text: string) => void
   deciding: boolean
 }) {
-  const mine = message.role === 'user'
-
   return (
     <div className={cx('flex flex-col gap-[7px]', mine ? 'items-end' : 'items-start')}>
       {files.length > 0 && threadId ? (
@@ -785,7 +990,7 @@ function Turn({
         </div>
       ) : null}
 
-      {calls.map((call) => (
+      {actions.map((call) => (
         <ToolCard
           key={call.id}
           call={call}
@@ -797,7 +1002,7 @@ function Turn({
       ))}
     </div>
   )
-}
+})
 
 function Composer({
   value,
@@ -846,10 +1051,22 @@ function Composer({
       ) : null}
 
       {pending.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
-          {pending.map((file) => (
-            <PendingChip key={file.key} file={file} onDrop={() => onDrop(file.key)} />
-          ))}
+        <div className="flex flex-col gap-1">
+          <div className="flex flex-wrap gap-1.5">
+            {pending.map((file) => (
+              <PendingChip key={file.key} file={file} onDrop={() => onDrop(file.key)} />
+            ))}
+          </div>
+          {/** Said in the open. As a tooltip on a red chip it was easy to miss,
+            *  and the message went out without the photo while the person
+            *  thought it had gone with it. */}
+          {pending
+            .filter((file) => file.state === 'failed')
+            .map((file) => (
+              <span key={file.key} className="text-[11px] text-[var(--danger)]">
+                {file.name}: {tError(file.error)} — tệp này sẽ không được gửi.
+              </span>
+            ))}
         </div>
       ) : null}
 

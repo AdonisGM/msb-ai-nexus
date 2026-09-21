@@ -61,6 +61,18 @@ export function ToolCard({
   )
 }
 
+/** A card the person acts on: a question back, or a write waiting for them
+ *  (and, later, what they decided). These stay where they were asked; reads
+ *  are gathered under the answer instead. */
+export function isActionCall(call: ChatToolCall): boolean {
+  return call.name === 'ask_choice' || call.status === 'pending' || call.name in WRITE_LABELS
+}
+
+/** Whether a read has figures worth a card. */
+export function hasReadCard(call: ChatToolCall): boolean {
+  return !isActionCall(call) && readBody(call) !== null
+}
+
 /* ──────────────────────────── A question back ───────────────────────────── */
 
 /** The assistant asking which of several things was meant.
@@ -116,13 +128,24 @@ function Choices({
 
 /* ───────────────────────────── A proposed write ─────────────────────────── */
 
-/** The four writes, named the way a person would describe the thing about to
- *  land in a customer's file — not by the tool's name. */
-const WRITE_LABELS: Record<string, { head: string; cta: string }> = {
+/** Everything that stops for a person, named the way a person would describe
+ *  it — not by the tool's name. The four writes land in a customer's file; the
+ *  search sends a query outside the system, and says so in its own words. */
+const WRITE_LABELS: Record<
+  string,
+  { head: string; cta: string; hint?: string; done?: string; skipped?: string }
+> = {
   record_signal: { head: 'Ghi tín hiệu vào hồ sơ khách', cta: 'Ghi lại' },
   draft_opportunity: { head: 'Tạo cơ hội mới', cta: 'Tạo cơ hội' },
   set_next_action: { head: 'Đặt hành động tiếp theo', cta: 'Đặt việc' },
   update_lead_fields: { head: 'Sửa thông tin cơ hội', cta: 'Lưu thay đổi' },
+  search_web: {
+    head: 'Tìm thêm bên ngoài hệ thống?',
+    cta: 'Tìm',
+    hint: 'Từ khoá chỉ gửi ra ngoài khi bạn bấm',
+    done: 'Đã tìm trên mạng — nguồn bên ngoài, chưa kiểm chứng',
+    skipped: 'Bạn đã bỏ qua — không tìm gì',
+  },
 }
 
 const FIELD_LABELS: Record<string, string> = {
@@ -138,6 +161,8 @@ const FIELD_LABELS: Record<string, string> = {
   nextAction: 'Việc tiếp theo',
   blockerCode: 'Điểm vướng',
   blockerNote: 'Ghi chú điểm vướng',
+  query: 'Từ khoá',
+  reason: 'Lý do',
 }
 
 function ApprovalCard({
@@ -166,7 +191,9 @@ function ApprovalCard({
           style={{ background: state.dot }}
         />
         <span className="mr-auto text-[11.5px] font-semibold" style={{ color: state.headFg }}>
-          {state.head ?? labels.head}
+          {(call.status === 'approved' && labels.done) ||
+            (call.status === 'denied' && labels.skipped) ||
+            (state.head ?? labels.head)}
         </span>
       </div>
 
@@ -185,10 +212,14 @@ function ApprovalCard({
           ))}
       </div>
 
+      {call.name === 'search_web' && call.status === 'approved' ? (
+        <Sources result={call.result} />
+      ) : null}
+
       {call.status === 'pending' ? (
         <div className="flex items-center gap-2 border-t border-line px-[13px] py-2.5">
           <span className="mr-auto text-[11px] text-pretty text-muted">
-            Chỉ ghi khi bạn bấm
+            {labels.hint ?? 'Chỉ ghi khi bạn bấm'}
           </span>
           <button
             type="button"
@@ -210,6 +241,39 @@ function ApprovalCard({
       ) : null}
     </div>
   )
+}
+
+/** The pages a search rested on, as links. The answer names them too, but a
+ *  source a person can open is the only kind worth citing from the open web. */
+function Sources({ result }: { result: unknown }) {
+  const sources = (result as { sources?: Array<{ title: string; url: string }> } | null)?.sources ?? []
+  if (sources.length === 0) return null
+
+  return (
+    <ul className="flex flex-col gap-1 border-t border-line px-[13px] py-2.5">
+      {sources.map((source) => (
+        <li key={source.url} className="flex min-w-0 items-baseline gap-2 text-[11.5px]">
+          <a
+            href={source.url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="truncate text-ink2 underline decoration-line2 underline-offset-2 hover:text-ink"
+          >
+            {source.title}
+          </a>
+          <span className="flex-none text-[10.5px] text-muted">{hostOf(source.url)}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
 }
 
 /** Every state the card can be read in later, so scrolling back through a

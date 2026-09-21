@@ -50,6 +50,9 @@ export type ChatMessage = {
   role: 'user' | 'assistant'
   content: Block[]
   createdAt: string
+  /** Written by the server for the model — the note that a proposed write was
+   *  approved or declined — not typed by the person. Not drawn. */
+  automatic?: boolean
 }
 
 /** `pending` is the only one the screen can act on: it is a write the
@@ -133,6 +136,53 @@ export function attachLimitFor(file: File): number {
   if (file.type === 'application/pdf') return 10 * 1024 * 1024
   return 256 * 1024
 }
+
+/** A phone photo made small enough to send, without losing anything the
+ *  model would see.
+ *
+ *  The API scales every image down to about 1,568px on its long edge before
+ *  the model looks at it, so a 12-megapixel photo is 4 MB of pixels thrown
+ *  away on arrival — and over the 5 MB limit, which is where the first photo
+ *  anybody tried from their phone ended up. Redrawn at 2,000px as a JPEG it is
+ *  a few hundred kilobytes and reads the same.
+ *
+ *  Left alone when it is already within bounds (a screenshot keeps its crisp
+ *  PNG text), when it is a GIF (redrawing would drop the animation), and when
+ *  the browser cannot decode it — the server then says what is wrong. */
+export async function shrinkImage(file: File): Promise<File> {
+  if (!file.type.startsWith('image/') || file.type === 'image/gif') return file
+
+  let bitmap: ImageBitmap
+  try {
+    bitmap = await createImageBitmap(file)
+  } catch {
+    return file
+  }
+
+  const long = Math.max(bitmap.width, bitmap.height)
+  if (long <= SHRINK_EDGE && file.size <= SHRINK_ABOVE) {
+    bitmap.close()
+    return file
+  }
+
+  const scale = Math.min(1, SHRINK_EDGE / long)
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.round(bitmap.width * scale)
+  canvas.height = Math.round(bitmap.height * scale)
+  canvas.getContext('2d')?.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+  bitmap.close()
+
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, 'image/jpeg', 0.85),
+  )
+  if (!blob) return file
+
+  const name = file.name.replace(/\.[^.]+$/, '') + '.jpg'
+  return new File([blob], name, { type: 'image/jpeg' })
+}
+
+const SHRINK_EDGE = 2000
+const SHRINK_ABOVE = 1.5 * 1024 * 1024
 
 export function uploadAttachment(threadId: string, file: File) {
   const form = new FormData()

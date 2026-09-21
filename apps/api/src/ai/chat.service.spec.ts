@@ -17,6 +17,7 @@ vi.mock('./claude', () => ({
   AI_ENABLED: false,
   MODEL: 'test-model',
   TITLE_MODEL: 'test-title-model',
+  SEARCH_MODEL: 'test-search-model',
   THINKING: { type: 'adaptive' },
   OUTPUT_CONFIG: { effort: 'medium' },
   claude: () => {
@@ -41,7 +42,7 @@ import {
   makeToolCall,
 } from '../test/factories'
 import { AttachmentsService } from './attachments.service'
-import { ChatService, hashOf } from './chat.service'
+import { ChatService, decisionText, hashOf, isDecisionTurn } from './chat.service'
 
 /** A conversation is somebody's working notes, not a branch record.
  *
@@ -187,6 +188,46 @@ describe('reading one back', () => {
     /** Some answers are prose. Drawing a chart of "who am I" would be worse
      *  than saying it. */
     expect(byName.get('whoami')).toBeNull()
+  })
+})
+
+/** The turns `decide` writes are for the model. The approval card already
+ *  tells the person what they decided; a bubble repeating it — result JSON and
+ *  all — in their own voice is noise the screen hides. */
+describe('telling a decision turn from a typed one', () => {
+  it.each([
+    ['an approval', decisionText('record_signal', true, false, { id: 'sig_1' })],
+    ['a failed approval', decisionText('set_next_action', true, true, { error: 'x' })],
+    ['a denial', decisionText('draft_opportunity', false, false, null)],
+    ['a denial with a reason', decisionText('record_signal', false, false, null, 'Sai khách')],
+    ['an approved search', decisionText('search_web', true, false, { summary: 'x' })],
+  ])('recognises %s', (_, text) => {
+    expect(isDecisionTurn(text)).toBe(true)
+    expect(isDecisionTurn([{ type: 'text', text }])).toBe(true)
+  })
+
+  it('leaves a person’s own words alone, even when they sound alike', () => {
+    expect(isDecisionTurn('Tôi đã duyệt hồ sơ này hôm qua rồi')).toBe(false)
+    expect(isDecisionTurn([{ type: 'text', text: 'Tôi không duyệt được, sếp chưa ký' }])).toBe(false)
+  })
+
+  it('does not take a turn with files for a decision', () => {
+    const text = decisionText('record_signal', true, false, {})
+    expect(isDecisionTurn([{ type: 'attachment', id: 'a' }, { type: 'text', text }])).toBe(false)
+  })
+
+  it('flags decision turns when a thread is read back', async () => {
+    const b = await makeBranch()
+    const thread = await makeConversation({ ownerId: b.saleRb.id })
+    await makeMessage({ conversationId: thread.id, seq: 1, content: [{ type: 'text', text: 'ghi giúp' }] })
+    await makeMessage({
+      conversationId: thread.id,
+      seq: 2,
+      content: [{ type: 'text', text: decisionText('record_signal', true, false, { id: 's' }) }],
+    })
+
+    const read = await service.get(b.saleRb, thread.id)
+    expect(read.messages.map((m) => m.automatic)).toEqual([false, true])
   })
 })
 
@@ -500,5 +541,19 @@ describe('files in a thread', () => {
 
     expect(await testDb.select().from(conversations)).toHaveLength(0)
     expect(await testDb.select().from(attachments)).toHaveLength(0)
+  })
+})
+
+describe('what the assistant is told after a search', () => {
+  /** "Đã ghi xong" would have the model treat a news article as a record in
+   *  the system, and quote it back as one. */
+  it('says a search result is outside material, not something written', () => {
+    const text = decisionText('search_web', true, false, { summary: 'Tin tức' })
+    expect(text).toContain('nguồn bên ngoài')
+    expect(text).not.toContain('đã ghi xong')
+  })
+
+  it('keeps the plain wording for a write', () => {
+    expect(decisionText('record_signal', true, false, {})).toContain('đã ghi xong')
   })
 })

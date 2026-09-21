@@ -470,11 +470,25 @@
   50%, 95% { opacity: 0 }
 }
 
-.tia-caret {
+/* The caret while a reply is being written, drawn inside the last line of
+ * text rather than after it. The Markdown ends in a block — a paragraph, a
+ * list item — and anything placed after that block starts a line of its own.
+ * A table or a code block gets no caret: there is no sensible "end of line"
+ * inside one, and it is gone the moment the next paragraph starts. */
+.tia-streaming > :is(p, span):last-child::after,
+.tia-streaming > :is(ul, ol):last-child > li:last-child::after,
+.tia-streaming > blockquote:last-child > :last-child::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 13px;
+  margin-left: 2px;
+  transform: translateY(2px);
+  background: var(--ink);
   animation: tia-caret 1.05s step-end infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .tia-dot { animation: none; opacity: .5 }
-  .tia-caret { animation: none }
+  .tia-streaming *::after { animation: none }
 }
