@@ -60,8 +60,15 @@ export const AI_ENABLED = (process.env.AI_MODE ?? 'live') === 'live' && ANTHROPI
  *  Both keys or nothing. A public key on its own reaches an endpoint that
  *  rejects it on every turn, which is a stream of warnings rather than a
  *  feature — and the assistant itself works identically either way. */
-export const LANGFUSE_ENABLED =
-  Boolean(process.env.LANGFUSE_PUBLIC_KEY) && Boolean(process.env.LANGFUSE_SECRET_KEY)
+export const LANGFUSE_PUBLIC_KEY = process.env.LANGFUSE_PUBLIC_KEY ?? ''
+export const LANGFUSE_SECRET_KEY = process.env.LANGFUSE_SECRET_KEY ?? ''
+
+/** Langfuse's own default, repeated here because the exporter is built by
+ *  hand in `tracing.ts` and an empty URL would post the branch's prompts
+ *  nowhere at all rather than visibly failing. */
+export const LANGFUSE_BASE_URL = process.env.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com'
+
+export const LANGFUSE_ENABLED = Boolean(LANGFUSE_PUBLIC_KEY) && Boolean(LANGFUSE_SECRET_KEY)
 
 /* Cookie and session settings live in config/auth-config.ts, not here, so
  * there is one owner for them rather than two that can drift apart. */
