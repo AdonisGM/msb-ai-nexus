@@ -1129,6 +1129,12 @@ const TOOL_WORDS: Record<string, string> = {
   set_next_action: 'soạn việc tiếp theo',
   update_lead_fields: 'soạn chỉnh sửa',
   search_web: 'đề xuất tìm trên mạng',
+  create_customer: 'soạn hồ sơ khách',
+  update_customer: 'soạn sửa hồ sơ',
+  act_on_opportunity: 'soạn chuyển bước',
+  assign_opportunity: 'soạn giao cơ hội',
+  set_target: 'soạn chỉ tiêu',
+  remove_target: 'soạn xoá chỉ tiêu',
 }
 
 /** One turn. Memoised: while a reply streams, the thread re-renders every

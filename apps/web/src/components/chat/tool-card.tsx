@@ -139,6 +139,12 @@ const WRITE_LABELS: Record<
   draft_opportunity: { head: 'Tạo cơ hội mới', cta: 'Tạo cơ hội' },
   set_next_action: { head: 'Đặt hành động tiếp theo', cta: 'Đặt việc' },
   update_lead_fields: { head: 'Sửa thông tin cơ hội', cta: 'Lưu thay đổi' },
+  create_customer: { head: 'Tạo hồ sơ khách hàng mới', cta: 'Tạo khách' },
+  update_customer: { head: 'Sửa hồ sơ khách hàng', cta: 'Lưu thay đổi' },
+  act_on_opportunity: { head: 'Chuyển bước cơ hội', cta: 'Xác nhận' },
+  assign_opportunity: { head: 'Giao cơ hội cho người khác', cta: 'Giao' },
+  set_target: { head: 'Đặt chỉ tiêu', cta: 'Lưu chỉ tiêu' },
+  remove_target: { head: 'Xoá chỉ tiêu', cta: 'Xoá' },
   search_web: {
     head: 'Tìm thêm bên ngoài hệ thống?',
     cta: 'Tìm',
@@ -163,6 +169,33 @@ const FIELD_LABELS: Record<string, string> = {
   blockerNote: 'Ghi chú điểm vướng',
   query: 'Từ khoá',
   reason: 'Lý do',
+  name: 'Tên',
+  segment: 'Phân khúc',
+  contactName: 'Người liên hệ',
+  contactPhone: 'Số điện thoại',
+  currentProducts: 'Sản phẩm đang dùng',
+  revenue: 'Doanh thu năm',
+  relationStage: 'Giai đoạn quan hệ',
+  note: 'Ghi chú',
+  ownerId: 'Người phụ trách',
+  action: 'Bước',
+  products: 'Đã bán',
+  missingInfo: 'Còn thiếu',
+  scope: 'Áp dụng cho',
+  period: 'Kỳ',
+  metric: 'Chỉ số',
+  amount: 'Mức',
+  targetId: 'Chỉ tiêu',
+}
+
+/** The funnel's buttons, named as they are on the lead's own screen. */
+const ACTION_WORDS: Record<string, string> = {
+  contact: 'Đã liên hệ',
+  advise: 'Đã tư vấn',
+  win: 'Chốt thành công',
+  lose: 'Thất bại',
+  confirm: 'Trưởng nhóm đối chiếu',
+  reopen: 'Mở lại',
 }
 
 function ApprovalCard({
@@ -204,7 +237,7 @@ function ApprovalCard({
             <Row
               key={key}
               label={FIELD_LABELS[key] ?? key}
-              value={fieldValue(key, value)}
+              value={fieldValue(key, value, call.input)}
               /** An id is not for reading, but hiding it would mean approving
                *  something whose target cannot be checked. Shown small. */
               mono={key.endsWith('Id')}
@@ -318,11 +351,34 @@ const STATES: Record<
   },
 }
 
-function fieldValue(key: string, value: unknown): string {
+function fieldValue(key: string, value: unknown, input?: Record<string, unknown>): string {
   if (key === 'type') return tCode('signal', String(value), String(value))
   if (key === 'product') return t(`product.${value as 'card'}`)
   if (key === 'blockerCode') return tCode('blocker', String(value), String(value))
-  if (key === 'value' && typeof value === 'number') return `${fmtNum(value)} đ`
+  if ((key === 'value' || key === 'revenue') && typeof value === 'number') return `${fmtNum(value)} đ`
+  if (key === 'action') return ACTION_WORDS[String(value)] ?? String(value)
+  if (key === 'segment') return value === 'sse' ? 'Doanh nghiệp (SSE)' : value === 'rb' ? 'Cá nhân (RB)' : String(value)
+  if (key === 'scope') return value === 'unit' ? 'Cả đơn vị' : 'Một nhân viên'
+  if (key === 'metric') {
+    return value === 'deals' ? 'Số cơ hội chốt' : value === 'value' ? 'Giá trị chốt' : 'Tỷ lệ chuyển đổi'
+  }
+  /** A conversion target travels in basis points; nobody reads "650" as 6.5%. */
+  if (key === 'amount' && typeof value === 'number') {
+    const metric = input?.metric ?? 'cr_rate'
+    if (metric === 'cr_rate') return `${(value / 100).toLocaleString('vi-VN')}%`
+    if (metric === 'value') return `${fmtNum(value)} đ`
+    return fmtNum(value)
+  }
+  /** What was sold on a win: one line per product, as it will be recorded. */
+  if (key === 'products' && Array.isArray(value)) {
+    return value
+      .map((item: { product?: string; amount?: number }) =>
+        `${t(`product.${(item.product ?? 'other') as 'card'}`)} ${fmtNum(item.amount ?? 0)} đ`,
+      )
+      .join('; ')
+  }
+  if (Array.isArray(value)) return value.join(', ')
+  if (value && typeof value === 'object') return JSON.stringify(value)
   return String(value)
 }
 

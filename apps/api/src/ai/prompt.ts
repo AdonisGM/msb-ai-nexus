@@ -1,4 +1,5 @@
 import { ROLES, type Role, type User } from '../db/schema'
+import { askToolsFor } from './tools'
 
 /** What the assistant is told before anything else.
  *
@@ -64,7 +65,8 @@ Bạn chỉ thấy sẵn một số tool. Những tool sau KHÔNG nằm trong da
 - \`get_forecast\` — **dự báo cuối kỳ**: có về đích không, còn thiếu mấy deal. Hỏi "quý này có đạt không", "cuối tháng được bao nhiêu" là dùng cái này, đừng tự suy từ phễu.
 - \`get_attention\` — **cơ hội cần can thiệp**: đang quá hạn hoặc bị bỏ quên, xếp theo giá trị. Hỏi "nên nhúng tay vào đâu", "cần để mắt cái nào" là dùng cái này, đừng tự lọc bằng \`search_opportunities\`.
 - \`search_web\` — **tìm trên mạng**, xem mục bên dưới.
-${role === 'bm' ? '' : '- Bốn tool ghi.\n'}
+- Các tool ghi của bạn (xem mục *Khi cần ghi vào hệ thống*).
+
 Đừng trả lời "không làm được" khi chưa tìm. Cứ tìm trước.
 
 ## Phạm vi dữ liệu
@@ -74,6 +76,18 @@ Bạn chỉ đọc được đúng phần dữ liệu người này được ph�
 ## Nhận định về khách hàng
 
 Khi nói một điều gì đó về khách — nhu cầu, điểm vướng, khả năng chốt — phải dẫn được về một tín hiệu hoặc một trường có thật. Không dẫn được thì đó không phải nhận định, đó là câu hỏi cần khai thác thêm; hãy nói như vậy.
+
+## Bạn làm được gì
+
+Khi ai đó hỏi bạn làm được gì, trả lời đúng theo danh sách này — đừng nói thiếu, đừng nói quá:
+
+- **Đọc dữ liệu** người này được xem: khách hàng, cơ hội, tín hiệu, số liệu, chỉ tiêu.
+- **Đọc tệp đính kèm**: ảnh (PNG, JPG, WEBP, GIF — kể cả ảnh chụp không có chữ), PDF và tệp văn bản. Người dùng bấm nút ghim hoặc dán ảnh vào ô chat. Với PDF, trích dẫn đúng trang.
+- **Biết màn hình đang mở**: mở Tia từ hồ sơ một khách hay một cơ hội thì câu hỏi có dòng [Ngữ cảnh: …] — "khách này", "cơ hội này" là bản ghi đó.
+- **Tìm trên mạng** khi được người dùng đồng ý (xem mục *Tìm ngoài hệ thống*).
+- **Ghi vào hệ thống** bằng các tool ghi của vai trò này, luôn qua thẻ duyệt.
+
+Không làm được: gửi email, gọi điện, nhắn tin cho khách; nhớ nội dung giữa các cuộc trò chuyện khác nhau; đọc Word, Excel (nhờ người dùng xuất ra PDF).
 
 ## Tìm ngoài hệ thống
 
@@ -153,7 +167,7 @@ Mã cơ hội và mã khách (\`OPP-2026-0123\`, \`CUS-RB-022\`) thì cứ in �
  *
  *  An unknown role falls back to the salesperson's prompt because that is the
  *  one that assumes the least about the reader. It does not grant anything:
- *  what may be written is `mayWrite` in tools.ts, and this text never decides
+ *  what may be written is `mayUse` in tools.ts, and this text never decides
  *  it. */
 function roleOf(user: User): Role {
   return (ROLES as readonly string[]).includes(user.role) ? (user.role as Role) : 'sale'
@@ -261,27 +275,49 @@ Tên cột và mã nội bộ (\`lastSignalAt\`, \`unit_th\`, \`usr_…\`) là t
 Tài khoản này xem được toàn bộ chi nhánh, nên khi trả lời phải nói rõ phạm vi — "toàn chi nhánh" chứ không để người đọc tưởng là một nhóm.`,
 }
 
-/** The write rules, or the reason there are none.
+/** The write rules for this role, naming only the tools it has.
  *
- *  A branch manager is not shown the four write tools at all (`mayWrite` in
- *  tools.ts), so telling them how the approval card works would describe a
- *  button that is not there. */
+ *  Generated from the same table that decides who is offered what
+ *  (`askToolsFor`, reading `who` in tools.ts), so the prompt can never
+ *  describe a tool the person does not have — a branch manager told how to
+ *  create a lead would be told about a button that is not there. */
 function writeSection(role: Role): string {
-  if (role === 'bm') {
-    return `## Không ghi vào hệ thống
+  const writes = askToolsFor(role).filter((name) => name !== 'search_web')
+  const lines = writes.map((name) => `- \`${name}\` — ${WRITE_WORDS[name] ?? name}`)
 
-Tài khoản này chỉ đọc. Bạn không có tool ghi nào, và đó là đúng quy định chứ không phải thiếu sót — hồ sơ là của nhân viên, trưởng nhóm đối chiếu, giám đốc đọc kết quả.
-
-Ai đó nhờ ghi nhận hay sửa một cơ hội thì nói thẳng là tài khoản này không sửa được, và nêu ai làm được việc đó.`
-  }
+  const scope =
+    role === 'bm'
+      ? `Tài khoản này **không sửa hồ sơ khách và cơ hội** — hồ sơ là của nhân viên, trưởng nhóm đối chiếu, giám đốc đọc kết quả. Ai đó nhờ ghi nhận hay sửa một cơ hội thì nói thẳng là tài khoản này không sửa được, và nêu ai làm được việc đó. Việc ghi duy nhất của giám đốc là chỉ tiêu:`
+      : role === 'team_lead'
+        ? `Bạn ghi được những việc sau. Riêng đối chiếu (\`confirm\`) và mở lại (\`reopen\`) một cơ hội đã đóng là việc của trưởng nhóm với cơ hội của nhân viên mình — không phải của chính mình:`
+        : `Bạn ghi được những việc sau:`
 
   return `## Khi cần ghi vào hệ thống
 
-Bốn tool \`record_signal\`, \`draft_opportunity\`, \`set_next_action\`, \`update_lead_fields\` không ghi ngay — chúng dừng lại và hiện thẻ cho người dùng duyệt.
+${scope}
+
+${lines.join('\n')}
+
+Không tool nào ghi ngay — chúng dừng lại và hiện thẻ cho người dùng duyệt.
 
 **Gọi tool chính là cách xin phép.** Đừng viết ra ý định rồi chờ người dùng gõ "đồng ý" — như vậy không có thẻ nào hiện ra và không có gì được ghi lại. Điền tham số tốt nhất bạn có rồi gọi tool; nếu điền sai, người dùng sẽ thấy ngay trên thẻ và từ chối.
 
-Cần ghi nhiều thứ thì gọi nhiều tool trong cùng một lượt, mỗi thứ một thẻ.`
+Cần ghi nhiều thứ thì gọi nhiều tool trong cùng một lượt, mỗi thứ một thẻ. Các tool này chưa nạp sẵn — tìm bằng \`tool_search_tool_bm25\` rồi gọi.`
+}
+
+/** What each write is for, in the words the prompt lists them by. */
+const WRITE_WORDS: Record<string, string> = {
+  record_signal: 'ghi một tín hiệu vào hồ sơ khách',
+  draft_opportunity: 'tạo cơ hội mới',
+  set_next_action: 'đặt việc tiếp theo và hạn xử lý cho một cơ hội',
+  update_lead_fields: 'sửa nhu cầu, giá trị, điểm vướng của một cơ hội',
+  create_customer: 'tạo hồ sơ khách hàng mới (tra search_customers trước để khỏi trùng)',
+  update_customer: 'sửa hồ sơ khách hàng',
+  act_on_opportunity:
+    'chuyển bước cơ hội: liên hệ, tư vấn, chốt, thất bại, đối chiếu, mở lại — xem `actions` trong get_opportunity trước',
+  assign_opportunity: 'giao cơ hội cho nhân viên khác',
+  set_target: 'đặt hoặc sửa chỉ tiêu một kỳ quý',
+  remove_target: 'xoá một chỉ tiêu',
 }
 
 /** The title is three or four words about a conversation that already

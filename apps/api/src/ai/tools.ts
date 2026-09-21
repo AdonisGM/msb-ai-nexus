@@ -13,8 +13,12 @@ import {
   PRODUCTS,
   SEGMENTS,
   STAGES,
+  TARGET_METRICS,
+  TARGET_SCOPES,
+  type Role,
   type User,
 } from '../db/schema'
+import type { ActionName } from '../opportunities/funnel'
 import { hasIdOrAccountNumber, searchWeb } from './web-search'
 
 /** What the assistant may reach for.
@@ -77,7 +81,17 @@ export type ToolMeta = {
    *  What stays loaded is what nearly every conversation opens with: who am I,
    *  what is today, and the two searches. */
   deferred?: boolean
+  /** Who may be offered it and have it run, for a tool that asks. Mirrors
+   *  the HTTP gate of the endpoint it stands for — `@Roles` on the controller
+   *  plus the admin pass-through in `RolesGuard` — so the assistant can do
+   *  exactly what the screens let the same person do, and no more. Absent
+   *  means everyone. */
+  who?: ReadonlyArray<Role>
 }
+
+/** Who edits customers and leads: the sales line, and the admin who passes
+ *  every gate. The branch manager reads; `@Roles('sale', 'team_lead')`. */
+const EDITORS: ReadonlyArray<Role> = ['sale', 'team_lead', 'admin']
 
 /** Declared beside the tools rather than on them, because `betaZodTool`
  *  carries the SDK's shape and nothing of ours. The chat service reads this to
@@ -115,10 +129,21 @@ export const TOOL_META: Record<string, ToolMeta> = {
    *  with the arguments — the services would refuse anything out of scope
    *  anyway — but because somebody has to own the entry that lands in the
    *  customer's file with their name on it. */
-  record_signal: { deferred: true, risk: 'ask', renderer: 'card.signal' },
-  draft_opportunity: { deferred: true, risk: 'ask', renderer: 'card.opportunity' },
-  set_next_action: { deferred: true, risk: 'ask', renderer: 'card.opportunity' },
-  update_lead_fields: { deferred: true, risk: 'ask', renderer: 'card.opportunity' },
+  record_signal: { deferred: true, risk: 'ask', renderer: 'card.signal', who: EDITORS },
+  draft_opportunity: { deferred: true, risk: 'ask', renderer: 'card.opportunity', who: EDITORS },
+  set_next_action: { deferred: true, risk: 'ask', renderer: 'card.opportunity', who: EDITORS },
+  update_lead_fields: { deferred: true, risk: 'ask', renderer: 'card.opportunity', who: EDITORS },
+  create_customer: { deferred: true, risk: 'ask', renderer: 'card.customer', who: EDITORS },
+  update_customer: { deferred: true, risk: 'ask', renderer: 'card.customer', who: EDITORS },
+  /** No role gate on the HTTP endpoint — which button a person may press
+   *  depends on whether the lead is theirs, and the funnel decides. A branch
+   *  manager is never permitted any of them, so is not offered the tool. */
+  act_on_opportunity: { deferred: true, risk: 'ask', renderer: 'card.opportunity', who: EDITORS },
+  assign_opportunity: { deferred: true, risk: 'ask', renderer: 'card.opportunity', who: ['admin'] },
+  /** Allocating targets is the branch manager's job; the service lets the
+   *  admin through as well. */
+  set_target: { deferred: true, risk: 'ask', renderer: null, who: ['bm', 'admin'] },
+  remove_target: { deferred: true, risk: 'ask', renderer: null, who: ['bm', 'admin'] },
 
   /** Not a write, but it asks all the same: the query is the one thing the
    *  assistant can send outside the system, and a person decides whether it
@@ -126,25 +151,29 @@ export const TOOL_META: Record<string, ToolMeta> = {
   search_web: { deferred: true, risk: 'ask', renderer: null },
 }
 
-/** Whether this person may change a record at all.
+/** Whether this person may be offered, and may run, a given tool.
  *
- *  The branch manager reads figures and never touches one — the business's
- *  rule, mirrored on the web in `lib/can.ts` and enforced on every HTTP write
- *  by `@Roles('sale', 'team_lead')`.
+ *  Checked in two places, for the same reason as any permission here: the
+ *  tool list, so the model is never offered what it cannot do — a card that
+ *  turns into an error on approval is worse than no card — and `runApproved`,
+ *  because an approval arrives in a later request than the proposal, and a
+ *  role can change in between.
  *
- *  It has to be repeated here because the assistant does not go through a
- *  controller. `runApproved` calls the service method directly, and the
- *  services check *scope* — may this person see this customer — not role. A
- *  branch manager can see every customer in their unit, so without this line
- *  the assistant would happily write a signal into a customer file that the
- *  API would have refused with a 403. The guard belongs in both places: the
- *  tool list, so the model is never offered it, and `runApproved`, because an
- *  approval arrives in a later request than the one that proposed it.
- *
- *  The admin keeps the write tools. They pass every role gate on the server
- *  too — a technical account that still lands in the audit trail. */
-export function mayWrite(user: User): boolean {
-  return user.role !== 'bm'
+ *  The services still check *scope* on every call; this is the coarser
+ *  question the controllers answer with `@Roles`, which the assistant does not
+ *  pass through. Without it a branch manager, who can see every customer in
+ *  the unit, could write through the assistant what the API refuses. */
+export function mayUse(user: Pick<User, 'role'>, name: string): boolean {
+  const who = metaOf(name).who
+  return !who || who.includes(user.role as Role)
+}
+
+/** The tools that stop for a person which this role has, for the prompt to
+ *  describe — so it never mentions a tool the person does not have. */
+export function askToolsFor(role: Role): string[] {
+  return Object.entries(TOOL_META)
+    .filter(([, meta]) => meta.risk === 'ask' && (!meta.who || meta.who.includes(role)))
+    .map(([name]) => name)
 }
 
 export function metaOf(name: string): ToolMeta {
@@ -450,12 +479,6 @@ ${
     })
   }
 
-
-  /** A person who may not write is not shown the four write tools at all,
-   *  rather than being allowed to propose something that fails on approval.
-   *  A model that cannot see a tool cannot offer it, which is a better
-   *  experience than a card that turns into an error when it is pressed. */
-  const writable = mayWrite(user)
 
   return [
     /* ── Who, when, and what the words mean ───────────────────────────── */
@@ -868,12 +891,13 @@ ${
         '"bạn có muốn tôi tìm trên mạng không" — gọi tool luôn, thẻ chính là câu hỏi đó.',
     }),
 
-    /* ── Bốn việc phải xin phép ───────────────────────────────────────── */
-    ...(writable ? writeTools() : []),
-  ]
+    /* ── Những việc phải xin phép ────────────────────────────────────── */
+    ...writeTools(),
+  ].filter((tool) => mayUse(user, tool.name))
 
-  /** The four that stop for a person, kept together so the role gate is one
-   *  line at the call site rather than a condition wrapped round eighty. */
+  /** Everything that writes. Each one is offered only to the roles in its
+   *  `who` — the filter above — so a person is shown exactly the writes the
+   *  screens would let them make. */
   function writeTools() {
     return [
     ask({
@@ -941,6 +965,134 @@ ${
         blockerNote: z.string().max(1000).optional(),
       }),
     }),
+
+    ask({
+      name: 'create_customer',
+      description:
+        'Tạo hồ sơ khách hàng mới — một khách người dùng vừa gặp mà hệ thống chưa có. ' +
+        'Gọi search_customers trước để chắc không trùng; trùng thì dùng hồ sơ cũ.',
+      inputSchema: z.object({
+        name: z.string().min(1).max(200).describe('Tên khách, hoặc tên doanh nghiệp'),
+        segment: z.enum(SEGMENTS).describe('sse = doanh nghiệp nhỏ, rb = cá nhân'),
+        contactName: z.string().max(200).optional().describe('Người liên hệ, với doanh nghiệp'),
+        contactPhone: z.string().max(40).optional(),
+        currentProducts: z
+          .array(z.string().min(1).max(100))
+          .max(20)
+          .optional()
+          .describe('Sản phẩm khách đang dùng — lấy đúng giá trị từ list_customer_facets'),
+        revenue: z.number().int().min(0).optional().describe('Doanh thu hoặc thu nhập năm, đồng'),
+        relationStage: z
+          .string()
+          .max(100)
+          .optional()
+          .describe('Giai đoạn quan hệ — lấy đúng giá trị từ list_customer_facets'),
+        note: z.string().max(2000).optional(),
+        ownerId: z
+          .string()
+          .optional()
+          .describe(
+            'Người phụ trách. Bỏ trống là chính người dùng; trưởng nhóm giao được cho nhân viên của mình.',
+          ),
+      }),
+    }),
+
+    ask({
+      name: 'update_customer',
+      description:
+        'Sửa hồ sơ một khách hàng: tên, người liên hệ, số điện thoại, sản phẩm đang dùng, ' +
+        'doanh thu, giai đoạn quan hệ, ghi chú. Chỉ gửi những trường thực sự cần đổi.',
+      inputSchema: z.object({
+        customerId: z.string().describe('id hoặc mã khách CUS-…'),
+        name: z.string().min(1).max(200).optional(),
+        contactName: z.string().max(200).optional(),
+        contactPhone: z.string().max(40).optional(),
+        currentProducts: z.array(z.string().min(1).max(100)).max(20).optional(),
+        revenue: z.number().int().min(0).optional(),
+        relationStage: z.string().max(100).optional(),
+        note: z.string().max(2000).optional(),
+      }),
+    }),
+
+    ask({
+      name: 'act_on_opportunity',
+      description:
+        'Chuyển một cơ hội sang bước tiếp theo — đúng như bấm nút trên màn chi tiết cơ hội:\n' +
+        '- contact: đã liên hệ lần đầu (từ bước mới)\n' +
+        '- advise: đã tư vấn (từ bước đã liên hệ)\n' +
+        '- win: chốt thành công — BẮT BUỘC reason và products (đã bán gì, bao nhiêu)\n' +
+        '- lose: thất bại — BẮT BUỘC reason, nên kèm blockerCode\n' +
+        '- confirm: trưởng nhóm đối chiếu một cơ hội đã đóng của nhân viên mình\n' +
+        '- reopen: trưởng nhóm mở lại một cơ hội đã đóng chưa đối chiếu — BẮT BUỘC reason\n\n' +
+        'Gọi get_opportunity trước: trường `actions` là các nút người dùng được bấm lúc này. ' +
+        'Không có trong đó thì đừng đề xuất — hệ thống sẽ từ chối.',
+      inputSchema: z.object({
+        opportunityId: z.string().describe('id hoặc mã cơ hội OPP-…'),
+        action: z.enum(['contact', 'advise', 'win', 'lose', 'confirm', 'reopen']),
+        reason: z.string().max(1000).optional().describe('Vì sao — bắt buộc với win, lose, reopen'),
+        products: z
+          .array(
+            z.object({
+              product: z.enum(PRODUCTS),
+              amount: z.number().int().min(0).describe('Giá trị, đồng'),
+              note: z.string().max(500).optional(),
+            }),
+          )
+          .max(10)
+          .optional()
+          .describe('Bắt buộc với win'),
+        nextAction: z.string().max(1000).optional(),
+        dueDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        blockerCode: z.enum(BLOCKER_CODES).optional().describe('Điểm vướng, nên có khi lose'),
+        blockerNote: z.string().max(1000).optional(),
+      }),
+    }),
+
+    ask({
+      name: 'assign_opportunity',
+      description:
+        'Giao một cơ hội cho nhân viên khác. Hệ thống kiểm tra người nhận thuộc tuyến bán ' +
+        'hàng và cùng phân khúc với cơ hội.',
+      inputSchema: z.object({
+        opportunityId: z.string().describe('id hoặc mã cơ hội OPP-…'),
+        ownerId: z.string().describe('Người nhận: id, mã đăng nhập, mã nhân viên hoặc tên'),
+      }),
+    }),
+
+    ask({
+      name: 'set_target',
+      description:
+        'Đặt hoặc sửa một chỉ tiêu cho một kỳ quý. Đơn vị của amount theo metric: cr_rate ' +
+        'tính bằng phần vạn (600 = 6%), deals là số cơ hội chốt, value là đồng. Gọi ' +
+        'get_targets trước để xem chỉ tiêu đang có.',
+      inputSchema: z.object({
+        scope: z.enum(TARGET_SCOPES).describe('user = một nhân viên, unit = cả đơn vị'),
+        ownerId: z
+          .string()
+          .optional()
+          .describe('Bắt buộc khi scope là user, bỏ trống khi scope là unit'),
+        segment: z
+          .enum(SEGMENTS)
+          .optional()
+          .describe('Chỉ với scope unit: thu hẹp về một phân khúc'),
+        period: z
+          .string()
+          .regex(/^\d{4}-Q[1-4]$/)
+          .describe('Kỳ quý, ví dụ 2026-Q4'),
+        metric: z.enum(TARGET_METRICS).optional().describe('Mặc định cr_rate'),
+        amount: z.number().int().positive(),
+        note: z.string().max(500).optional(),
+      }),
+    }),
+
+    ask({
+      name: 'remove_target',
+      description: 'Xoá một chỉ tiêu. Lấy id từ get_targets.',
+      inputSchema: z.object({ targetId: z.string() }),
+    }),
     ]
   }
 }
@@ -958,8 +1110,7 @@ export async function runApproved(
   name: string,
   input: Record<string, unknown>,
 ): Promise<unknown> {
-  const { customers: _customers, opportunities, signals } = services
-  void _customers
+  const { customers, opportunities, signals, targets, users } = services
 
   /** Before the role gate: a search changes nothing in the branch's data, so
    *  the rule that keeps a branch manager read-only does not apply to it. */
@@ -973,7 +1124,7 @@ export async function runApproved(
    *  back in a later request, and the only thing linking it to the proposal is
    *  a row in `tool_calls` — a role that changed in between, or a call raised
    *  before this guard existed, would otherwise write. */
-  if (!mayWrite(user)) throw new ForbiddenException('role_may_not_write')
+  if (!mayUse(user, name)) throw new ForbiddenException('role_may_not_write')
 
   /** The card shows what the model wrote — often a code, which is what the
    *  person recognises. It becomes an id here, at the moment of the write,
@@ -1025,6 +1176,42 @@ export async function runApproved(
         blockerNote: input.blockerNote as string | undefined,
       })
 
+    case 'create_customer': {
+      const ownerIdOf = ownerResolver(users, user)
+      return customers.create(user, {
+        ...(input as Record<string, unknown>),
+        ownerId: await ownerIdOf(input.ownerId as string | undefined),
+      } as never)
+    }
+
+    case 'update_customer': {
+      const { customerId, ...fields } = input
+      return customers.update(user, customerId as string, fields as never)
+    }
+
+    case 'act_on_opportunity': {
+      const { opportunityId, action, ...body } = input
+      return opportunities.act(user, opportunityId as string, action as ActionName, body as never)
+    }
+
+    case 'assign_opportunity': {
+      const ownerIdOf = ownerResolver(users, user)
+      const ownerId = await ownerIdOf(input.ownerId as string)
+      return opportunities.assign(user, input.opportunityId as string, ownerId!)
+    }
+
+    case 'set_target': {
+      const ownerIdOf = ownerResolver(users, user)
+      return targets.set(user, {
+        ...(input as Record<string, unknown>),
+        ownerId: await ownerIdOf(input.ownerId as string | undefined),
+      } as never)
+    }
+
+    case 'remove_target':
+      await targets.remove(user, input.targetId as string)
+      return { removed: input.targetId }
+
     default:
       throw new Error(`unknown_write_tool:${name}`)
   }
@@ -1053,11 +1240,17 @@ export function requestTools(services: Services, user: User, sink?: ToolSink) {
   const built = buildTools(services, user, sink).map((tool) => {
     const meta = metaOf(tool.name)
     if (meta.deferred) Object.assign(tool, { defer_loading: true })
-    /** Strict on the tools that stop for a person. Their arguments are what
-     *  the approval card shows and what the write runs with, so they are the
-     *  ones where "almost matches the schema" is not good enough. */
-    if (meta.risk === 'ask') {
-      const schema = (tool as { input_schema?: unknown }).input_schema
+    /** Strict on the tools that stop for a person and have a fixed shape.
+     *  Their arguments are what the approval card shows and what the write
+     *  runs with, so "almost matches the schema" is not good enough.
+     *
+     *  Not on the patch-shaped ones — update a customer, move a lead — whose
+     *  every field is optional. The API caps optional parameters across all
+     *  strict tools at 24 and refuses the whole request past it (found live:
+     *  28 with the customer tools added). Those still go through zod before
+     *  anything is written; they only lose the guarantee at generation time. */
+    const schema = (tool as { input_schema?: unknown }).input_schema
+    if (meta.risk === 'ask' && optionalCount(schema) <= STRICT_MAX_OPTIONAL) {
       Object.assign(tool, { strict: true, input_schema: strictSchema(schema) })
     }
     return tool
@@ -1074,10 +1267,12 @@ export function requestTools(services: Services, user: User, sink?: ToolSink) {
  *
  *  Strict refuses numeric bounds outright — "For 'integer' type, properties
  *  exclusiveMinimum, maximum are not supported" — and zod writes both for any
- *  `.int().positive()`. They are dropped from what the API sees; the zod
- *  schema still checks them when the tool runs, so a zero or negative value is
- *  refused all the same, just one step later. String lengths, patterns and
- *  enums are accepted as they are, measured against the live API. */
+ *  `.int().positive()`. It refuses array lengths the same way ("For 'array'
+ *  type, property 'maxItems' is not supported"). Both are dropped from what the
+ *  API sees; the zod schema still checks them when the tool runs, so a zero
+ *  value or an eleventh product is refused all the same, one step later.
+ *  String lengths, patterns and enums are accepted as they are — each of these
+ *  was measured against the live API, not assumed. */
 export function strictSchema<T>(schema: T): T {
   if (Array.isArray(schema)) return schema.map(strictSchema) as T
   if (!schema || typeof schema !== 'object') return schema
@@ -1096,6 +1291,35 @@ const NUMERIC_BOUNDS = new Set([
   'exclusiveMinimum',
   'exclusiveMaximum',
   'multipleOf',
+  'minItems',
+  'maxItems',
+  'uniqueItems',
 ])
+
+/** Tools with more optional fields than this are not made strict — see
+ *  `requestTools`. At three, every role's strict tools together stay far
+ *  inside the API's limit of 24. */
+export const STRICT_MAX_OPTIONAL = 3
+
+/** Optional properties in a JSON schema, nested objects included — what the
+ *  API counts against its strict-mode limit. */
+export function optionalCount(schema: unknown): number {
+  if (!schema || typeof schema !== 'object') return 0
+  if (Array.isArray(schema)) return schema.reduce((sum, item) => sum + optionalCount(item), 0)
+
+  const node = schema as { properties?: Record<string, unknown>; required?: string[] }
+  let count = 0
+  if (node.properties) {
+    const required = new Set(node.required ?? [])
+    for (const [key, value] of Object.entries(node.properties)) {
+      if (!required.has(key)) count += 1
+      count += optionalCount(value)
+    }
+  }
+  for (const [key, value] of Object.entries(node)) {
+    if (key !== 'properties' && typeof value === 'object') count += optionalCount(value)
+  }
+  return count
+}
 
 export type BuiltTools = ReturnType<typeof buildTools>

@@ -41,27 +41,33 @@ describe('the system prompt', () => {
     expect(text).toContain('không phải thứ để nói lại cho họ nghe')
   })
 
-  /** The one rule in here that mirrors a real permission. A branch manager has
-   *  no write tools at all — `mayWrite` in tools.ts — so a section explaining
-   *  the approval card would describe a button that is not there. */
+  /** The write section is generated from the same table that decides who
+   *  is offered which tool, so it can never name one the person lacks. */
   describe('what a branch manager is told about writing', () => {
     const text = systemPrompt(person('bm', { title: 'Giám đốc chi nhánh' }))
 
-    it('says the account only reads', () => {
-      expect(text).toContain('## Không ghi vào hệ thống')
-      expect(text).toContain('chỉ đọc')
+    it('says the account does not edit customers or leads', () => {
+      expect(text).toContain('không sửa hồ sơ khách và cơ hội')
     })
 
-    it('never mentions the write tools or the approval card', () => {
+    it('never mentions a customer or lead write', () => {
       for (const tool of [
         'record_signal',
         'draft_opportunity',
         'set_next_action',
         'update_lead_fields',
+        'create_customer',
+        'update_customer',
+        'act_on_opportunity',
+        'assign_opportunity',
       ]) {
         expect(text, tool).not.toContain(tool)
       }
-      expect(text).not.toContain('Bốn tool ghi')
+    })
+
+    it('names the target tools, which are the branch manager’s', () => {
+      expect(text).toContain('set_target')
+      expect(text).toContain('remove_target')
     })
   })
 
@@ -71,10 +77,40 @@ describe('the system prompt', () => {
         const text = systemPrompt(person(role))
 
         expect(text).toContain('## Khi cần ghi vào hệ thống')
-        expect(text).toContain('record_signal')
-        expect(text).toContain('Bốn tool ghi')
+        expect(text).toContain('Gọi tool chính là cách xin phép')
+        for (const tool of ['record_signal', 'create_customer', 'act_on_opportunity']) {
+          expect(text, `${role}/${tool}`).toContain(tool)
+        }
       })
     }
+
+    it('keeps targets away from the sales line and assignment with the admin', () => {
+      expect(systemPrompt(person('sale'))).not.toContain('set_target')
+      expect(systemPrompt(person('team_lead'))).not.toContain('assign_opportunity')
+      expect(systemPrompt(person('admin'))).toContain('assign_opportunity')
+    })
+  })
+
+  /** Asked "can you read a photo?", the assistant said no — the prompt never
+   *  told it attachments exist. It lists what it can and cannot do now. */
+  describe('what the assistant says it can do', () => {
+    const text = systemPrompt(person('sale'))
+
+    it('knows it reads photos, PDFs and text files', () => {
+      expect(text).toContain('## Bạn làm được gì')
+      expect(text).toContain('PDF')
+      expect(text).toContain('ảnh chụp không có chữ')
+    })
+
+    it('knows about the page context and the web search', () => {
+      expect(text).toContain('[Ngữ cảnh: …]')
+      expect(text).toContain('Tìm trên mạng')
+    })
+
+    it('says plainly what it cannot do', () => {
+      expect(text).toContain('Không làm được')
+      expect(text).toContain('gửi email')
+    })
   })
 
   /** The salesperson's half is the one that was asked for by name, and the one

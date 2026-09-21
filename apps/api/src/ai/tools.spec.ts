@@ -18,7 +18,15 @@ import { ReportsService } from '../reports/reports.service'
 import { SignalsService } from '../signals/signals.service'
 import { TargetsService } from '../targets/targets.service'
 import { UsersService } from '../users/users.service'
-import { BLOCKER_CODES, opportunities, PRODUCTS, signals, type User } from '../db/schema'
+import {
+  BLOCKER_CODES,
+  customers,
+  opportunities,
+  PRODUCTS,
+  signals,
+  targets,
+  type User,
+} from '../db/schema'
 import { closeDb, resetDb, testDb } from '../test/db'
 import { makeBranch, makeCustomer, makeOpportunity, makeUser } from '../test/factories'
 import { eq } from 'drizzle-orm'
@@ -26,6 +34,7 @@ import {
   buildTools,
   fillerIn,
   metaOf,
+  optionalCount,
   requestTools,
   runApproved,
   strictSchema,
@@ -288,9 +297,12 @@ describe('what comes back', () => {
 })
 
 describe('the tool register', () => {
+  /** The admin passes every gate, so it is the one account that is built
+   *  every tool — which makes it the check that none is undeclared. */
   it('describes every tool that is built', async () => {
     const b = await branch()
-    const names = buildTools(services, b.saleRb).map((tool) => tool.name)
+    const admin = { ...b.bm, role: 'admin' as const }
+    const names = buildTools(services, admin).map((tool) => tool.name)
 
     expect(names.sort()).toEqual(Object.keys(TOOL_META).sort())
   })
@@ -304,10 +316,16 @@ describe('the tool register', () => {
       .sort()
 
     expect(asks).toEqual([
+      'act_on_opportunity',
+      'assign_opportunity',
+      'create_customer',
       'draft_opportunity',
       'record_signal',
+      'remove_target',
       'search_web',
       'set_next_action',
+      'set_target',
+      'update_customer',
       'update_lead_fields',
     ])
   })
@@ -708,14 +726,57 @@ describe('naming a record by its code', () => {
  *  numeric bounds outright — found against the live API — so they are
  *  stripped from what it sees and left to zod. */
 describe('strict tools', () => {
-  it('marks every tool that asks, and no read', async () => {
+  it('never marks a read strict', async () => {
     const b = await branch()
-    const tools = requestTools(services, b.saleRb) as Array<{ name: string; strict?: boolean }>
+    const admin = { ...b.bm, role: 'admin' as const }
+    const tools = requestTools(services, admin) as Array<{ name: string; strict?: boolean }>
 
     for (const tool of tools) {
-      if (!(tool.name in TOOL_META)) continue
-      expect(Boolean(tool.strict), tool.name).toBe(metaOf(tool.name).risk === 'ask')
+      if (tool.strict) expect(metaOf(tool.name).risk, tool.name).toBe('ask')
     }
+  })
+
+  it('keeps the fixed-shape writes strict', async () => {
+    const b = await branch()
+    const strict = (requestTools(services, b.saleRb) as Array<{ name: string; strict?: boolean }>)
+      .filter((tool) => tool.strict)
+      .map((tool) => tool.name)
+
+    for (const name of ['record_signal', 'draft_opportunity', 'set_next_action', 'search_web']) {
+      expect(strict, name).toContain(name)
+    }
+  })
+
+  /** The API refuses the whole request past 24 optional parameters across
+   *  strict tools — found live when the customer tools were added. Checked for
+   *  every role, since each is built a different set. */
+  it('stays inside the API’s limit on optional parameters, for every role', async () => {
+    const b = await branch()
+    const admin = { ...b.bm, role: 'admin' as const }
+
+    for (const user of [b.saleRb, b.leadRb, b.bm, admin]) {
+      const total = (requestTools(services, user) as Array<{ strict?: boolean; input_schema: unknown }>)
+        .filter((tool) => tool.strict)
+        .reduce((sum, tool) => sum + optionalCount(tool.input_schema), 0)
+      expect(total, user.role).toBeLessThanOrEqual(24)
+    }
+  })
+
+  it('counts optional properties, nested ones included', () => {
+    expect(
+      optionalCount({
+        type: 'object',
+        properties: {
+          a: { type: 'string' },
+          b: { type: 'string' },
+          list: {
+            type: 'array',
+            items: { type: 'object', properties: { x: {}, y: {} }, required: ['x'] },
+          },
+        },
+        required: ['a'],
+      }),
+    ).toBe(3)
   })
 
   it('sends no numeric bounds on a strict tool', async () => {
@@ -725,6 +786,14 @@ describe('strict tools', () => {
 
     const text = JSON.stringify(draft.input_schema)
     expect(text).not.toMatch(/exclusiveMinimum|"maximum"|"minimum"/)
+
+    /** Array lengths too — refused live on the new customer and win tools. */
+    const all = JSON.stringify(
+      (requestTools(services, b.saleRb) as Array<{ strict?: boolean; input_schema: unknown }>)
+        .filter((tool) => tool.strict)
+        .map((tool) => tool.input_schema),
+    )
+    expect(all).not.toMatch(/"maxItems"|"minItems"/)
     /** What strict does accept is kept. */
     expect(text).toContain('"enum"')
     expect(text).toContain('"maxLength"')
@@ -814,5 +883,199 @@ describe('a question back that is not a question', () => {
         ],
       }),
     ).toBeNull()
+  })
+})
+
+/** Everything the screens let a person write, the assistant can propose — and
+ *  nothing more. Each write is offered by the same rule the endpoint it stands
+ *  for applies: `@Roles` on the controller, the admin pass-through, and the
+ *  service's own checks when it runs. */
+describe('who is offered which write', () => {
+  const offered = (user: Pick<User, 'role'> & User) =>
+    buildTools(services, user)
+      .map((tool) => tool.name)
+      .filter((name) => metaOf(name).risk === 'ask' && name !== 'search_web')
+      .sort()
+
+  const LEAD_WRITES = [
+    'act_on_opportunity',
+    'create_customer',
+    'draft_opportunity',
+    'record_signal',
+    'set_next_action',
+    'update_customer',
+    'update_lead_fields',
+  ]
+
+  it('gives the sales line the customer and lead writes, and nothing else', async () => {
+    const b = await branch()
+    expect(offered(b.saleRb)).toEqual(LEAD_WRITES)
+    expect(offered(b.leadRb)).toEqual(LEAD_WRITES)
+  })
+
+  /** The case that was asked for by name: a branch manager cannot add a lead. */
+  it('gives a branch manager the targets and no customer or lead write', async () => {
+    const b = await branch()
+    expect(offered(b.bm)).toEqual(['remove_target', 'set_target'])
+  })
+
+  it('gives the admin everything, assignment included', async () => {
+    const b = await branch()
+    const admin = { ...b.bm, role: 'admin' as const }
+    expect(offered(admin)).toEqual([...LEAD_WRITES, 'assign_opportunity', 'remove_target', 'set_target'].sort())
+  })
+})
+
+describe('running the new writes once approved', () => {
+  it('creates a customer for the salesperson who asked', async () => {
+    const b = await branch()
+
+    const created = (await runApproved(services, b.saleRb, 'create_customer', {
+      name: 'Trần Minh Long',
+      segment: 'rb',
+      contactPhone: '0912345678',
+    })) as { id: string; ownerId: string }
+
+    const [row] = await testDb.select().from(customers).where(eq(customers.id, created.id))
+    expect(row.name).toBe('Trần Minh Long')
+    expect(row.ownerId).toBe(b.saleRb.id)
+  })
+
+  /** The service's own rules still apply: a salesperson on the personal
+   *  book cannot be handed a company. */
+  it('refuses a customer outside the owner’s segment', async () => {
+    const b = await branch()
+    await expect(
+      runApproved(services, b.saleRb, 'create_customer', { name: 'Công ty ABC', segment: 'sse' }),
+    ).rejects.toThrow('owner_segment_mismatch')
+  })
+
+  it('refuses to create a customer for a branch manager, even if an approval arrives', async () => {
+    const b = await branch()
+    const before = (await testDb.select().from(customers)).length
+
+    await expect(
+      runApproved(services, b.bm, 'create_customer', { name: 'Ghi hộ', segment: 'rb' }),
+    ).rejects.toThrow('role_may_not_write')
+
+    expect(await testDb.select().from(customers)).toHaveLength(before)
+  })
+
+  it('updates only the fields named', async () => {
+    const b = await branch()
+
+    await runApproved(services, b.saleRb, 'update_customer', {
+      customerId: b.rbCustomer.id,
+      contactPhone: '0987654321',
+    })
+
+    const [row] = await testDb.select().from(customers).where(eq(customers.id, b.rbCustomer.id))
+    expect(row.contactPhone).toBe('0987654321')
+    expect(row.name).toBe('Nguyễn Văn Khách')
+  })
+
+  it('moves a lead a step, as the button would', async () => {
+    const b = await branch()
+
+    await runApproved(services, b.saleRb, 'act_on_opportunity', {
+      opportunityId: b.rbLead.id,
+      action: 'contact',
+    })
+
+    const [row] = await testDb.select().from(opportunities).where(eq(opportunities.id, b.rbLead.id))
+    expect(row.stage).toBe('contacted')
+  })
+
+  /** The funnel still decides: a lead that is someone else's cannot be
+   *  moved, whatever tool the request came through. */
+  it('refuses to move a colleague’s lead', async () => {
+    const b = await branch()
+
+    await expect(
+      runApproved(services, b.saleRb, 'act_on_opportunity', {
+        opportunityId: b.sseLead.id,
+        action: 'contact',
+      }),
+    ).rejects.toThrow()
+
+    const [row] = await testDb.select().from(opportunities).where(eq(opportunities.id, b.sseLead.id))
+    expect(row.stage).toBe('new')
+  })
+
+  it('refuses a win without saying what was sold', async () => {
+    const b = await branch()
+    await runApproved(services, b.saleRb, 'act_on_opportunity', {
+      opportunityId: b.rbLead.id,
+      action: 'contact',
+    })
+
+    await expect(
+      runApproved(services, b.saleRb, 'act_on_opportunity', {
+        opportunityId: b.rbLead.id,
+        action: 'win',
+        reason: 'Khách đồng ý',
+      }),
+    ).rejects.toThrow('products_required')
+  })
+
+  it('sets a target for the branch manager, and not for a salesperson', async () => {
+    const b = await branch()
+
+    await runApproved(services, b.bm, 'set_target', {
+      scope: 'unit',
+      period: '2026-Q4',
+      metric: 'cr_rate',
+      amount: 650,
+    })
+    expect(await testDb.select().from(targets)).toHaveLength(1)
+
+    await expect(
+      runApproved(services, b.saleRb, 'set_target', {
+        scope: 'unit',
+        period: '2026-Q4',
+        amount: 700,
+      }),
+    ).rejects.toThrow('role_may_not_write')
+  })
+
+  it('removes a target the branch manager set', async () => {
+    const b = await branch()
+    const target = (await runApproved(services, b.bm, 'set_target', {
+      scope: 'unit',
+      period: '2026-Q4',
+      amount: 650,
+    })) as { id: string }
+
+    await runApproved(services, b.bm, 'remove_target', { targetId: target.id })
+    expect(await testDb.select().from(targets)).toHaveLength(0)
+  })
+
+  it('assigns a lead for the admin, by the recipient’s name or code', async () => {
+    const b = await branch()
+    const admin = { ...b.bm, role: 'admin' as const }
+    const colleague = await makeUser({
+      unitId: b.unit.id,
+      role: 'sale',
+      segment: 'rb',
+      managerId: b.leadRb.id,
+    })
+
+    await runApproved(services, admin, 'assign_opportunity', {
+      opportunityId: b.rbLead.id,
+      ownerId: colleague.code,
+    })
+
+    const [row] = await testDb.select().from(opportunities).where(eq(opportunities.id, b.rbLead.id))
+    expect(row.ownerId).toBe(colleague.id)
+  })
+
+  it('refuses assignment to anyone but the admin', async () => {
+    const b = await branch()
+    await expect(
+      runApproved(services, b.leadRb, 'assign_opportunity', {
+        opportunityId: b.rbLead.id,
+        ownerId: b.saleRb.id,
+      }),
+    ).rejects.toThrow('role_may_not_write')
   })
 })
