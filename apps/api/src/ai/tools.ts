@@ -20,6 +20,7 @@ import {
 } from '../db/schema'
 import type { ActionName } from '../opportunities/funnel'
 import { hasIdOrAccountNumber, searchWeb } from './web-search'
+import { fetchUrl, isWebUrl } from './web-fetch'
 
 /** What the assistant may reach for.
  *
@@ -149,6 +150,9 @@ export const TOOL_META: Record<string, ToolMeta> = {
    *  assistant can send outside the system, and a person decides whether it
    *  goes. Open to every role, the branch manager included. */
   search_web: { deferred: true, risk: 'ask', renderer: null },
+  /** Reading one page the person pointed at. Asks for the same reason the
+   *  search does: it is a request from the bank's side to a site outside it. */
+  fetch_url: { deferred: true, risk: 'ask', renderer: null },
 }
 
 /** Whether this person may be offered, and may run, a given tool.
@@ -891,6 +895,32 @@ ${
         '"bạn có muốn tôi tìm trên mạng không" — gọi tool luôn, thẻ chính là câu hỏi đó.',
     }),
 
+    ask({
+      name: 'fetch_url',
+      description:
+        'Đọc một trang web cụ thể — khi người dùng dán một đường link, hoặc nhờ xem trang ' +
+        'web của một doanh nghiệp đã biết địa chỉ. Trả về tiêu đề và tóm tắt nội dung trang.\n\n' +
+        'Chỉ đọc đúng đường link người dùng đưa hoặc đã xuất hiện trong cuộc trò chuyện; ' +
+        'không tự đoán địa chỉ. Cần tìm thì dùng search_web trước. Nội dung trang là nguồn ' +
+        'bên ngoài, chưa kiểm chứng.',
+      inputSchema: z.object({
+        url: z
+          .string()
+          .max(2000)
+          .refine(isWebUrl, { message: 'Chỉ đọc được đường link http:// hoặc https:// đầy đủ.' })
+          .describe('Đường link đầy đủ, đúng như sẽ mở'),
+        reason: z
+          .string()
+          .min(2)
+          .max(200)
+          .describe('Vì sao cần đọc trang này, một câu — hiện trên thẻ'),
+      }),
+      permission:
+        'GỌI TOOL NÀY CHÍNH LÀ CÁCH BẠN XIN PHÉP MỞ TRANG. Chưa có gì được mở — hệ thống hiện ' +
+        'một thẻ kèm đúng đường link và lý do, người dùng bấm Đọc thì mới đọc. Đừng hỏi bằng ' +
+        'lời "bạn có muốn tôi đọc trang này không" — gọi tool luôn, thẻ chính là câu hỏi đó.',
+    }),
+
     /* ── Những việc phải xin phép ────────────────────────────────────── */
     ...writeTools(),
   ].filter((tool) => mayUse(user, tool.name))
@@ -1112,12 +1142,17 @@ export async function runApproved(
 ): Promise<unknown> {
   const { customers, opportunities, signals, targets, users } = services
 
-  /** Before the role gate: a search changes nothing in the branch's data, so
-   *  the rule that keeps a branch manager read-only does not apply to it. */
+  /** Before the role gate: reading the web changes nothing in the branch's
+   *  data, so the rules about who may write do not apply to it. */
   if (name === 'search_web') {
     const query = String(input.query ?? '')
     if (hasIdOrAccountNumber(query)) throw new Error('search_query_has_id_number')
     return searchWeb(query)
+  }
+  if (name === 'fetch_url') {
+    const url = String(input.url ?? '').trim()
+    if (!isWebUrl(url)) throw new Error('fetch_url_not_web')
+    return fetchUrl(url)
   }
 
   /** Checked again here, and not only in the tool list. The approval comes

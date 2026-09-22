@@ -1140,6 +1140,7 @@ const TOOL_WORDS: Record<string, string> = {
   set_next_action: 'soạn việc tiếp theo',
   update_lead_fields: 'soạn chỉnh sửa',
   search_web: 'đề xuất tìm trên mạng',
+  fetch_url: 'đề xuất đọc trang web',
   create_customer: 'soạn hồ sơ khách',
   update_customer: 'soạn sửa hồ sơ',
   act_on_opportunity: 'soạn chuyển bước',

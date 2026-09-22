@@ -145,6 +145,13 @@ const WRITE_LABELS: Record<
   assign_opportunity: { head: 'Giao cơ hội cho người khác', cta: 'Giao' },
   set_target: { head: 'Đặt chỉ tiêu', cta: 'Lưu chỉ tiêu' },
   remove_target: { head: 'Xoá chỉ tiêu', cta: 'Xoá' },
+  fetch_url: {
+    head: 'Đọc trang web bên ngoài?',
+    cta: 'Đọc',
+    hint: 'Trang chỉ được mở khi bạn bấm',
+    done: 'Đã đọc trang — nguồn bên ngoài, chưa kiểm chứng',
+    skipped: 'Bạn đã bỏ qua — không mở trang',
+  },
   search_web: {
     head: 'Tìm thêm bên ngoài hệ thống?',
     cta: 'Tìm',
@@ -168,6 +175,7 @@ const FIELD_LABELS: Record<string, string> = {
   blockerCode: 'Điểm vướng',
   blockerNote: 'Ghi chú điểm vướng',
   query: 'Từ khoá',
+  url: 'Đường link',
   reason: 'Lý do',
   name: 'Tên',
   segment: 'Phân khúc',
@@ -248,6 +256,9 @@ function ApprovalCard({
       {call.name === 'search_web' && call.status === 'approved' ? (
         <Sources result={call.result} />
       ) : null}
+      {call.name === 'fetch_url' && call.status === 'approved' ? (
+        <Sources result={pageAsSource(call.result)} />
+      ) : null}
 
       {call.status === 'pending' ? (
         <div className="flex items-center gap-2 border-t border-line px-[13px] py-2.5">
@@ -299,6 +310,15 @@ function Sources({ result }: { result: unknown }) {
       ))}
     </ul>
   )
+}
+
+/** A page that was read, drawn with the same list as a search's sources —
+ *  one link, under the page's own title. A page that could not be read shows
+ *  nothing here; the answer says why. */
+function pageAsSource(result: unknown) {
+  const page = result as { url?: string; title?: string | null; failed?: string | null } | null
+  if (!page?.url || page.failed) return { sources: [] }
+  return { sources: [{ url: page.url, title: page.title || page.url }] }
 }
 
 function hostOf(url: string): string {

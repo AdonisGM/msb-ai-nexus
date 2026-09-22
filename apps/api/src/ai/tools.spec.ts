@@ -4,6 +4,14 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
  *  who may run it and when — so it is replaced with a stub that records what it
  *  was asked for. */
 const searched: string[] = []
+const fetched: string[] = []
+vi.mock('./web-fetch', async (original) => ({
+  ...(await original<typeof import('./web-fetch')>()),
+  fetchUrl: async (url: string) => {
+    fetched.push(url)
+    return { url, title: 'Trang chủ', summary: 'Tóm tắt trang', failed: null }
+  },
+}))
 vi.mock('./web-search', async (original) => ({
   ...(await original<typeof import('./web-search')>()),
   searchWeb: async (query: string) => {
@@ -71,6 +79,7 @@ const services = {
 beforeEach(async () => {
   await resetDb()
   searched.length = 0
+  fetched.length = 0
 })
 afterAll(closeDb)
 
@@ -320,6 +329,7 @@ describe('the tool register', () => {
       'assign_opportunity',
       'create_customer',
       'draft_opportunity',
+      'fetch_url',
       'record_signal',
       'remove_target',
       'search_web',
@@ -894,7 +904,7 @@ describe('who is offered which write', () => {
   const offered = (user: Pick<User, 'role'> & User) =>
     buildTools(services, user)
       .map((tool) => tool.name)
-      .filter((name) => metaOf(name).risk === 'ask' && name !== 'search_web')
+      .filter((name) => metaOf(name).risk === 'ask' && name !== 'search_web' && name !== 'fetch_url')
       .sort()
 
   const LEAD_WRITES = [
@@ -1077,5 +1087,63 @@ describe('running the new writes once approved', () => {
         ownerId: b.saleRb.id,
       }),
     ).rejects.toThrow('role_may_not_write')
+  })
+})
+
+/** Reading one page the person pointed at: proposed like a write, opened
+ *  only once somebody has seen the exact link, and fetched on Anthropic's
+ *  side so it can never reach an address inside the bank's network. */
+describe('reading a web page', () => {
+  it('opens nothing when the assistant proposes a page', async () => {
+    const b = await branch()
+    const answer = await toolset(b.saleSse)('fetch_url', {
+      url: 'https://hoaphat.com.vn/gioi-thieu',
+      reason: 'Xem giới thiệu doanh nghiệp trước buổi gặp',
+    })
+
+    expect(answer.status).toBe('pending_approval')
+    expect(fetched).toEqual([])
+  })
+
+  it('opens the approved link, and only that', async () => {
+    const b = await branch()
+    const result = await runApproved(services, b.saleSse, 'fetch_url', {
+      url: 'https://hoaphat.com.vn/gioi-thieu',
+      reason: 'x',
+    })
+
+    expect(fetched).toEqual(['https://hoaphat.com.vn/gioi-thieu'])
+    expect(result).toMatchObject({ title: 'Trang chủ' })
+  })
+
+  it('is offered to every role, and runs for a branch manager', async () => {
+    const b = await branch()
+    const admin = { ...b.bm, role: 'admin' as const }
+    for (const user of [b.saleRb, b.leadRb, b.bm, admin]) {
+      expect(buildTools(services, user).map((tool) => tool.name), user.role).toContain('fetch_url')
+    }
+
+    await runApproved(services, b.bm, 'fetch_url', { url: 'https://sbv.gov.vn', reason: 'x' })
+    expect(fetched).toEqual(['https://sbv.gov.vn'])
+  })
+
+  it.each(['file:///etc/passwd', 'javascript:alert(1)', 'ftp://example.com/a', 'localhost:8333'])(
+    'refuses %s, even when approved',
+    async (url) => {
+      const b = await branch()
+      await expect(runApproved(services, b.saleRb, 'fetch_url', { url, reason: 'x' })).rejects.toThrow(
+        'fetch_url_not_web',
+      )
+      expect(fetched).toEqual([])
+    },
+  )
+
+  it('tells the model to fix a link that is not a web address', async () => {
+    const b = await branch()
+    const tool = buildTools(services, b.saleRb).find((candidate) => candidate.name === 'fetch_url')
+    const parse = (tool as unknown as { parse: (input: unknown) => unknown }).parse
+
+    expect(() => parse({ url: 'hoaphat.com.vn', reason: 'cần đọc' })).toThrow()
+    expect(() => parse({ url: 'https://hoaphat.com.vn', reason: 'cần đọc' })).not.toThrow()
   })
 })

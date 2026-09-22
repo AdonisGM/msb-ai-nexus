@@ -201,6 +201,7 @@ describe('telling a decision turn from a typed one', () => {
     ['a denial', decisionText('draft_opportunity', false, false, null)],
     ['a denial with a reason', decisionText('record_signal', false, false, null, 'Sai khách')],
     ['an approved search', decisionText('search_web', true, false, { summary: 'x' })],
+    ['an approved page read', decisionText('fetch_url', true, false, { summary: 'x' })],
   ])('recognises %s', (_, text) => {
     expect(isDecisionTurn(text)).toBe(true)
     expect(isDecisionTurn([{ type: 'text', text }])).toBe(true)

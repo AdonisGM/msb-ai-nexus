@@ -727,6 +727,9 @@ export function decisionText(
   if (name === 'search_web') {
     return `${APPROVED} "${name}". Kết quả tìm trên mạng — nguồn bên ngoài, chưa kiểm chứng, không phải số liệu của ngân hàng. Trả lời dựa trên kết quả này và nêu nguồn: ${JSON.stringify(result)}`
   }
+  if (name === 'fetch_url') {
+    return `${APPROVED} "${name}". Nội dung trang web — nguồn bên ngoài, chưa kiểm chứng, không phải số liệu của ngân hàng. Trả lời dựa trên nội dung này và nêu đường link: ${JSON.stringify(result)}`
+  }
   return `${APPROVED} "${name}". Hệ thống đã ghi xong: ${JSON.stringify(result)}`
 }
 
